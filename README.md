@@ -14,6 +14,14 @@ You can install the tool as an Antigravity Plugin by running the provided instal
 
 This will deploy the script to `~/.local/share/agy-statusline` and automatically configure your Antigravity IDE (`~/.gemini/antigravity-cli/settings.json`) to use it.
 
+## Uninstallation
+
+To safely remove the plugin and restore your Antigravity configuration to its original state, run:
+
+```bash
+./uninstall.sh
+```
+
 ## Usage
 
 The script reads a JSON payload from `stdin` and outputs a formatted status line, wrapping to the terminal width if necessary.
