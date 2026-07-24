@@ -6,13 +6,13 @@ This is a script to render a dynamic, visually appealing CLI status line for Ant
 
 ## Installation
 
-You can install the tool to your user-local bin directory (`~/.local/bin`) by running the provided installation script:
+You can install the tool as an Antigravity Plugin by running the provided installation script:
 
 ```bash
 ./install.sh
 ```
 
-Follow the post-installation instructions to ensure `~/.local/bin` is in your shell's `PATH`.
+This will deploy the script to `~/.local/share/agy-statusline` and automatically configure your Antigravity IDE (`~/.gemini/antigravity-cli/settings.json`) to use it.
 
 ## Usage
 

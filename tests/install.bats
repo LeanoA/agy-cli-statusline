@@ -18,34 +18,47 @@ teardown() {
   rm -rf "$FAKE_PATH"
 }
 
-@test "Creates ~/.local/bin if missing" {
+@test "Creates ~/.local/share/agy-statusline and copies executable" {
   run "$INSTALL_SCRIPT"
   [ "$status" -eq 0 ]
-  [ -d "$HOME/.local/bin" ]
+  [ -d "$HOME/.local/share/agy-statusline" ]
+  [ -f "$HOME/.local/share/agy-statusline/statusline.sh" ]
+  [ -x "$HOME/.local/share/agy-statusline/statusline.sh" ]
 }
 
-@test "Copies executable, renames it, and makes it executable" {
+@test "Scaffolds settings.json from scratch if it did not exist" {
   run "$INSTALL_SCRIPT"
   [ "$status" -eq 0 ]
-  [ -f "$HOME/.local/bin/agy-statusline" ]
-  [ -x "$HOME/.local/bin/agy-statusline" ]
+  [ -d "$HOME/.gemini/antigravity-cli" ]
+  [ -f "$HOME/.gemini/antigravity-cli/settings.json" ]
+  
+  run jq -c '.statusLine' "$HOME/.gemini/antigravity-cli/settings.json"
+  [[ "$output" == '{"type":"","command":"'"$HOME"'/.local/share/agy-statusline/statusline.sh","enabled":true}' ]]
 }
 
-@test "Overwrites existing installation automatically" {
-  mkdir -p "$HOME/.local/bin"
-  echo "old version" > "$HOME/.local/bin/agy-statusline"
+@test "Creates settings.json.bak and patches existing settings.json" {
+  mkdir -p "$HOME/.gemini/antigravity-cli"
+  echo '{"existingKey": "existingValue"}' > "$HOME/.gemini/antigravity-cli/settings.json"
   
   run "$INSTALL_SCRIPT"
   [ "$status" -eq 0 ]
+  [ -f "$HOME/.gemini/antigravity-cli/settings.json.bak" ]
   
-  run cat "$HOME/.local/bin/agy-statusline"
-  [[ "$output" != "old version" ]]
-  [[ "$output" == *"#!/usr/bin/env bash"* ]]
+  run cat "$HOME/.gemini/antigravity-cli/settings.json.bak"
+  [[ "$output" == '{"existingKey": "existingValue"}' ]]
+  
+  run jq -c '.existingKey' "$HOME/.gemini/antigravity-cli/settings.json"
+  [[ "$output" == '"existingValue"' ]]
+  
+  run jq -c '.statusLine.enabled' "$HOME/.gemini/antigravity-cli/settings.json"
+  [[ "$output" == "true" ]]
 }
 
-@test "Prints post-installation instructions" {
+@test "Does not print instructions to modify shell profile" {
   run "$INSTALL_SCRIPT"
   [ "$status" -eq 0 ]
   [[ "$output" == *"Installation successful!"* ]]
-  [[ "$output" == *'export PATH="$HOME/.local/bin:$PATH"'* ]]
+  [[ "$output" != *".zshrc"* ]]
+  [[ "$output" != *".bashrc"* ]]
+  [[ "$output" != *"export PATH"* ]]
 }
