@@ -1,0 +1,6 @@
+temp/
+.*
+!.gitignore
+build_registry.py
+gemini.md
+skills-lock.json
