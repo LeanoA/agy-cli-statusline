@@ -4,6 +4,16 @@
 
 This is a script to render a dynamic, visually appealing CLI status line for Antigravity (or any JSON-emitting telemetry tool). It uses standard terminal truecolors and Nerd Fonts to provide a concise, real-time overview of the system's state.
 
+## Installation
+
+You can install the tool to your user-local bin directory (`~/.local/bin`) by running the provided installation script:
+
+```bash
+./install.sh
+```
+
+Follow the post-installation instructions to ensure `~/.local/bin` is in your shell's `PATH`.
+
 ## Usage
 
 The script reads a JSON payload from `stdin` and outputs a formatted status line, wrapping to the terminal width if necessary.
@@ -11,7 +21,7 @@ The script reads a JSON payload from `stdin` and outputs a formatted status line
 Example:
 
 ```bash
-cat payload.json | ./statusline.sh
+cat payload.json | agy-statusline
 ```
 
 ## Segments
@@ -38,7 +48,7 @@ If you do not have a Nerd Font or prefer standard Unicode characters and emojis,
 
 ```bash
 export AGY_CLASSIC_MODE=1
-cat payload.json | ./statusline.sh
+cat payload.json | agy-statusline
 ```
 
 This will fall back to standard characters (e.g., `●`, `◆`, `🤖`, `⏳`), ensuring compatibility across all terminals.
