@@ -24,6 +24,22 @@ model=$(printf "%s" "$json_payload" | jq -r '.model.display_name // "unknown"')
 ctx_pct=$(printf "%s" "$json_payload" | jq -r '.context_window.used_percentage // 0 | floor')
 git_branch=$(printf "%s" "$json_payload" | jq -r '.vcs?.branch? // empty')
 git_dirty=$(printf "%s" "$json_payload" | jq -r '.vcs?.dirty? // false')
+cwd=$(printf "%s" "$json_payload" | jq -r '.cwd // empty')
+
+if [[ -z "$git_branch" && -n "$cwd" ]]; then
+    if git -C "$cwd" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        git_branch=$(git -C "$cwd" branch --show-current 2>/dev/null)
+        if [[ -z "$git_branch" ]]; then
+            git_branch=$(git -C "$cwd" rev-parse --short HEAD 2>/dev/null)
+        fi
+        
+        if [[ -n "$(git -C "$cwd" status --porcelain -uno 2>/dev/null)" ]]; then
+            git_dirty="true"
+        else
+            git_dirty="false"
+        fi
+    fi
+fi
 term_width=$(printf "%s" "$json_payload" | jq -r '.terminal_width // 80')
 task_count=$(printf "%s" "$json_payload" | jq -r '.task_count // 0')
 subagent_count=$(printf "%s" "$json_payload" | jq -r '[ .subagents[]? | select(.status == "running" or .status == "active") ] | length')

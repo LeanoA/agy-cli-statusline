@@ -194,3 +194,68 @@ setup() {
   [[ "$output" == *"[TSK]"* ]]    # tasks
   [[ ! "$output" == *"⌛"* ]]     # quota reset
 }
+
+@test "Git: uses vcs payload when present" {
+  run bash -c "echo '{\"product\":\"A\",\"model\":{\"display_name\":\"B\"},\"terminal_width\":200,\"vcs\":{\"branch\":\"main-test\",\"dirty\":true}}' | bash \"$SCRIPT\""
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"main-test"* ]] || false
+  [[ "$output" == *""* ]] || false
+}
+
+@test "Git: falls back to native git when vcs is omitted but cwd is present" {
+  repo_dir=$(mktemp -d)
+  git init "$repo_dir"
+  git -C "$repo_dir" config user.name "Test User"
+  git -C "$repo_dir" config user.email "test@example.com"
+  git -C "$repo_dir" commit --allow-empty -m "init"
+  git -C "$repo_dir" branch -M "fallback-branch"
+  
+  run bash -c "echo '{\"product\":\"A\",\"model\":{\"display_name\":\"B\"},\"terminal_width\":200,\"cwd\":\"$repo_dir\"}' | bash \"$SCRIPT\""
+  rm -rf "$repo_dir"
+  
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"fallback-branch"* ]] || false
+  [[ ! "$output" == *""* ]] || false
+}
+
+@test "Git: native fallback detects dirty state" {
+  repo_dir=$(mktemp -d)
+  git init "$repo_dir"
+  git -C "$repo_dir" config user.name "Test User"
+  git -C "$repo_dir" config user.email "test@example.com"
+  git -C "$repo_dir" commit --allow-empty -m "init"
+  git -C "$repo_dir" branch -M "fallback-branch"
+  touch "$repo_dir/dirty_file"
+  git -C "$repo_dir" add "$repo_dir/dirty_file"
+  
+  run bash -c "echo '{\"product\":\"A\",\"model\":{\"display_name\":\"B\"},\"terminal_width\":200,\"cwd\":\"$repo_dir\"}' | bash \"$SCRIPT\""
+  rm -rf "$repo_dir"
+  
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"fallback-branch"* ]] || false
+  [[ "$output" == *""* ]] || false
+}
+
+@test "Git: native fallback in detached HEAD state" {
+  repo_dir=$(mktemp -d)
+  git init "$repo_dir"
+  git -C "$repo_dir" config user.name "Test User"
+  git -C "$repo_dir" config user.email "test@example.com"
+  git -C "$repo_dir" commit --allow-empty -m "init"
+  git -C "$repo_dir" commit --allow-empty -m "second"
+  git -C "$repo_dir" checkout HEAD~1
+  
+  short_sha=$(git -C "$repo_dir" rev-parse --short HEAD)
+  
+  run bash -c "echo '{\"product\":\"A\",\"model\":{\"display_name\":\"B\"},\"terminal_width\":200,\"cwd\":\"$repo_dir\"}' | bash \"$SCRIPT\""
+  rm -rf "$repo_dir"
+  
+  [ "$status" -eq 0 ]
+  [[ "$output" == *" $short_sha"* ]] || false
+}
+
+@test "Git: incomplete payload missing cwd shows no git info" {
+  run bash -c "echo '{\"product\":\"A\",\"model\":{\"display_name\":\"B\"},\"terminal_width\":200}' | bash \"$SCRIPT\""
+  [ "$status" -eq 0 ]
+  [[ ! "$output" == *""* ]] || false
+}
