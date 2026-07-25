@@ -4,9 +4,12 @@ set -e
 
 TARGET_DIR="$HOME/.local/share/agy-statusline"
 
-echo "Removing statusline script..."
+echo "Removing scripts..."
 if [ -f "$TARGET_DIR/statusline.sh" ]; then
   rm -f "$TARGET_DIR/statusline.sh"
+fi
+if [ -f "$TARGET_DIR/uninstall.sh" ]; then
+  rm -f "$TARGET_DIR/uninstall.sh"
 fi
 
 if [ -d "$TARGET_DIR" ]; then

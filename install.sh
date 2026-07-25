@@ -6,10 +6,34 @@ if ! command -v jq >/dev/null 2>&1; then
   exit 1
 fi
 
+if ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then
+  echo "Error: Either curl or wget is required but neither is installed." >&2
+  exit 1
+fi
+
+download_file() {
+  url="$1"
+  dest="$2"
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL "$url" -o "$dest"
+  else
+    wget -qO "$dest" "$url"
+  fi
+}
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 INSTALL_DIR="$HOME/.local/share/agy-statusline"
 mkdir -p "$INSTALL_DIR"
-cp statusline.sh "$INSTALL_DIR/statusline.sh"
-chmod +x "$INSTALL_DIR/statusline.sh"
+
+if [ -f "$SCRIPT_DIR/statusline.sh" ] && [ -f "$SCRIPT_DIR/uninstall.sh" ]; then
+  cp "$SCRIPT_DIR/statusline.sh" "$INSTALL_DIR/statusline.sh"
+  cp "$SCRIPT_DIR/uninstall.sh" "$INSTALL_DIR/uninstall.sh"
+else
+  BASE_URL="https://raw.githubusercontent.com/LeanoA/agy-cli-statusline/main"
+  download_file "${BASE_URL}/statusline.sh" "$INSTALL_DIR/statusline.sh"
+  download_file "${BASE_URL}/uninstall.sh" "$INSTALL_DIR/uninstall.sh"
+fi
+chmod +x "$INSTALL_DIR/statusline.sh" "$INSTALL_DIR/uninstall.sh"
 
 SETTINGS_DIR="$HOME/.gemini/antigravity-cli"
 SETTINGS_FILE="$SETTINGS_DIR/settings.json"

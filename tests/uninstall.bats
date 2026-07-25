@@ -11,18 +11,20 @@ setup() {
   
   mkdir -p "$TARGET_DIR"
   touch "$TARGET_DIR/statusline.sh"
-  chmod +x "$TARGET_DIR/statusline.sh"
+  touch "$TARGET_DIR/uninstall.sh"
+  chmod +x "$TARGET_DIR/statusline.sh" "$TARGET_DIR/uninstall.sh"
 }
 
 teardown() {
   rm -rf "$MOCK_HOME"
 }
 
-@test "Deletes statusline.sh and removes empty ~/.local/share/agy-statusline directory" {
+@test "Deletes scripts and removes empty ~/.local/share/agy-statusline directory" {
   run "$UNINSTALL_SCRIPT"
   
   [ "$status" -eq 0 ]
   [ ! -f "$TARGET_DIR/statusline.sh" ]
+  [ ! -f "$TARGET_DIR/uninstall.sh" ]
   [ ! -d "$TARGET_DIR" ]
 }
 
@@ -79,7 +81,7 @@ teardown() {
   run "$UNINSTALL_SCRIPT"
   [ "$status" -eq 0 ]
   
-  [[ "$output" == *"Removing statusline script..."* ]]
+  [[ "$output" == *"Removing scripts..."* ]]
   [[ "$output" == *"Reverting settings changes..."* ]]
   [[ "$output" == *"Uninstall successful!"* ]]
   
