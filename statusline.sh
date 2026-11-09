@@ -18,6 +18,20 @@ if [[ -z "$json_payload" ]]; then
     exit 0
 fi
 
+# --- 2b. Optional payload capture (opt-in via AGY_STATUSLINE_DEBUG=1) ---
+# Appends {ts, payload} as one JSONL line. Failures never affect rendering.
+capture_payload() {
+    local file="${AGY_STATUSLINE_DEBUG_FILE:-$HOME/.cache/agy-statusline/payloads.jsonl}"
+    local line
+    mkdir -p "$(dirname "$file")" 2>/dev/null || return 0
+    line=$(printf "%s" "$json_payload" | jq -c --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '{ts: $ts, payload: .}' 2>/dev/null) || return 0
+    printf "%s\n" "$line" >> "$file" 2>/dev/null || return 0
+}
+
+if [[ "${AGY_STATUSLINE_DEBUG:-0}" == "1" ]]; then
+    capture_payload || true
+fi
+
 # --- 3. Extract JSON Fields ---
 agent_state=$(printf "%s" "$json_payload" | jq -r '.agent_state // "idle"')
 model=$(printf "%s" "$json_payload" | jq -r '.model.display_name // "unknown"')

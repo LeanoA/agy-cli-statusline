@@ -259,3 +259,33 @@ setup() {
   [ "$status" -eq 0 ]
   [[ ! "$output" == *""* ]] || false
 }
+
+@test "debug capture is off by default and writes nothing" {
+  export AGY_STATUSLINE_DEBUG_FILE="$BATS_TEST_TMPDIR/payloads.jsonl"
+  unset AGY_STATUSLINE_DEBUG
+  run bash -c "echo '{\"model\":{\"display_name\":\"M\"},\"terminal_width\":200}' | bash \"$SCRIPT\""
+  [ "$status" -eq 0 ]
+  [ ! -e "$AGY_STATUSLINE_DEBUG_FILE" ]
+}
+
+@test "debug capture appends one JSONL line per invocation with ts and payload" {
+  export AGY_STATUSLINE_DEBUG=1
+  export AGY_STATUSLINE_DEBUG_FILE="$BATS_TEST_TMPDIR/sub/payloads.jsonl"
+  run bash -c "echo '{\"model\":{\"display_name\":\"M\"},\"quota\":{\"x-5h\":{\"remaining_fraction\":0.5}}}' | bash \"$SCRIPT\""
+  [ "$status" -eq 0 ]
+  run bash -c "echo '{\"model\":{\"display_name\":\"N\"}}' | bash \"$SCRIPT\""
+  [ "$status" -eq 0 ]
+  [ "$(wc -l < "$AGY_STATUSLINE_DEBUG_FILE" | tr -d ' ')" -eq 2 ]
+  run jq -r 'select(.payload.model.display_name == "M") | .payload.quota["x-5h"].remaining_fraction' "$AGY_STATUSLINE_DEBUG_FILE"
+  [ "$output" = "0.5" ]
+  run jq -r '.ts | type' "$AGY_STATUSLINE_DEBUG_FILE"
+  [ "${lines[0]}" = "string" ]
+}
+
+@test "debug capture failure does not break rendering" {
+  export AGY_STATUSLINE_DEBUG=1
+  export AGY_STATUSLINE_DEBUG_FILE="/dev/null/nope/payloads.jsonl"
+  run bash -c "echo '{\"model\":{\"display_name\":\"Still\"},\"terminal_width\":200}' | bash \"$SCRIPT\""
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Still"* ]]
+}

@@ -67,6 +67,16 @@ If you don't have a Nerd Font installed, you can enable a fallback mode using st
 export AGY_CLASSIC_MODE=1
 ```
 
+## Debug: Payload Capture
+
+To inspect the raw JSON payload that `agy` sends to the status line, enable capture before launching `agy`:
+```bash
+export AGY_STATUSLINE_DEBUG=1
+# Optional, defaults to ~/.cache/agy-statusline/payloads.jsonl
+export AGY_STATUSLINE_DEBUG_FILE=/path/to/payloads.jsonl
+```
+Each invocation appends one JSONL line `{"ts": "...", "payload": {...}}`. Capture is off by default and never affects rendering.
+
 ## Disclaimer
 
 This is my personal configuration tailored to my daily workflow. I'm sharing it in the hopes that you find it as useful and pleasant to look at as I do.
