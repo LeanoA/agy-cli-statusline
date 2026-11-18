@@ -18,6 +18,24 @@ if [[ -z "$json_payload" ]]; then
     exit 0
 fi
 
+# --- 2b. Optional payload capture (opt-in via AGY_STATUSLINE_DEBUG=1 or debug.on sentinel) ---
+# Appends {ts, payload} as one JSONL line. Failures never affect rendering.
+AGY_CACHE_DIR="${AGY_CACHE_DIR:-$HOME/.cache/agy-statusline}"
+AGY_DEBUG_FILE="${AGY_STATUSLINE_DEBUG_FILE:-$AGY_CACHE_DIR/payloads.jsonl}"
+AGY_DEBUG_FLAG="${AGY_STATUSLINE_DEBUG_FLAG:-$(dirname "$AGY_DEBUG_FILE")/debug.on}"
+
+capture_payload() {
+    local file="$AGY_DEBUG_FILE"
+    local line
+    mkdir -p "$(dirname "$file")" 2>/dev/null || return 0
+    line=$(printf "%s" "$json_payload" | jq -c --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '{ts: $ts, payload: .}' 2>/dev/null) || return 0
+    printf "%s\n" "$line" >> "$file" 2>/dev/null || return 0
+}
+
+if [[ "${AGY_STATUSLINE_DEBUG:-0}" == "1" || -f "$AGY_DEBUG_FLAG" ]]; then
+    capture_payload || true
+fi
+
 # --- 3. Extract JSON Fields ---
 agent_state=$(printf "%s" "$json_payload" | jq -r '.agent_state // "idle"')
 model=$(printf "%s" "$json_payload" | jq -r '.model.display_name // "unknown"')
@@ -44,29 +62,139 @@ term_width=$(printf "%s" "$json_payload" | jq -r '.terminal_width // 80')
 task_count=$(printf "%s" "$json_payload" | jq -r '.task_count // 0')
 subagent_count=$(printf "%s" "$json_payload" | jq -r '[ .subagents[]? | select(.status == "running" or .status == "active") ] | length')
 
-# Extract all quota bucket candidates
-_g5h_rem=$(printf "%s" "$json_payload" | jq -r '.quota["gemini-5h"]?.remaining_fraction | if . != null then (. * 100 | floor) else empty end')
-_g5h_rst=$(printf "%s" "$json_payload" | jq -r '.quota["gemini-5h"]?.reset_in_seconds // empty')
-_gwk_rem=$(printf "%s" "$json_payload" | jq -r '.quota["gemini-weekly"]?.remaining_fraction | if . != null then (. * 100 | floor) else empty end')
-_gwk_rst=$(printf "%s" "$json_payload" | jq -r '.quota["gemini-weekly"]?.reset_in_seconds // empty')
+# Dynamically resolve 5h and weekly quota buckets for the active model
+resolve_quota_bucket() {
+    local window_regex="$1"
+    local family_regex="$2"
+    local exclude_regex="${3:-}"
+    printf "%s" "$json_payload" | jq -r \
+        --arg win "$window_regex" \
+        --arg fam "$family_regex" \
+        --arg exc "$exclude_regex" '
+        (.quota // {}) | to_entries
+        | map(select(
+            (.key | test($win; "i")) and
+            (.key | test($fam; "i")) and
+            (($exc == "") or ((.key | test($exc; "i")) | not)) and
+            (.value.remaining_fraction != null)
+          ))
+        | first // empty
+        | "\(.key)\t\(.value.remaining_fraction)\t\((.value.remaining_fraction * 100 | floor))\t\(.value.reset_in_seconds // "")"
+    '
+}
 
-_3p5h_rem=$(printf "%s" "$json_payload" | jq -r '.quota["3p-5h"]?.remaining_fraction | if . != null then (. * 100 | floor) else empty end')
-_3p5h_rst=$(printf "%s" "$json_payload" | jq -r '.quota["3p-5h"]?.reset_in_seconds // empty')
-_3pwk_rem=$(printf "%s" "$json_payload" | jq -r '.quota["3p-weekly"]?.remaining_fraction | if . != null then (. * 100 | floor) else empty end')
-_3pwk_rst=$(printf "%s" "$json_payload" | jq -r '.quota["3p-weekly"]?.reset_in_seconds // empty')
-
-# Route to the correct bucket pair based on model name
-if [[ "$model" =~ [Gg][Ee][Mm][Ii][Nn][Ii] ]]; then
-    quota_5h_rem="$_g5h_rem"
-    quota_5h_rst="$_g5h_rst"
-    quota_wk_rem="$_gwk_rem"
-    quota_wk_rst="$_gwk_rst"
+bucket_5h=""
+bucket_wk=""
+if [[ "$model" =~ [Aa][Rr][Gg][Oo][Nn] ]]; then
+    bucket_5h=$(resolve_quota_bucket "5h$" "argon")
+    bucket_wk=$(resolve_quota_bucket "(weekly|7d|wk)$" "argon")
+    if [[ -z "$bucket_wk" ]]; then
+        bucket_wk=$(resolve_quota_bucket "(weekly|7d|wk)$" "^gemini" "argon")
+    fi
+elif [[ "$model" =~ [Gg][Ee][Mm][Ii][Nn][Ii] ]]; then
+    bucket_5h=$(resolve_quota_bucket "5h$" "^gemini" "argon")
+    bucket_wk=$(resolve_quota_bucket "(weekly|7d|wk)$" "^gemini" "argon")
 else
-    quota_5h_rem="$_3p5h_rem"
-    quota_5h_rst="$_3p5h_rst"
-    quota_wk_rem="$_3pwk_rem"
-    quota_wk_rst="$_3pwk_rst"
+    bucket_5h=$(resolve_quota_bucket "5h$" "^3p" "argon|gemini")
+    bucket_wk=$(resolve_quota_bucket "(weekly|7d|wk)$" "^3p" "argon|gemini")
 fi
+
+IFS=$'\t' read -r quota_5h_key quota_5h_raw quota_5h_rem quota_5h_rst <<< "$bucket_5h"
+IFS=$'\t' read -r quota_wk_key quota_wk_raw quota_wk_rem quota_wk_rst <<< "$bucket_wk"
+
+session_id=$(printf "%s" "$json_payload" | jq -r '.session_id // "default"')
+curr_tokens=$(printf "%s" "$json_payload" | jq -r '((.context_window.total_input_tokens // 0) + (.context_window.total_output_tokens // 0)) | floor')
+now_ts="${AGY_STATUSLINE_NOW:-$(date +%s)}"
+stale_threshold="${AGY_QUOTA_STALE_SECONDS:-120}"
+quota_state_file="${AGY_QUOTA_STATE_FILE:-$AGY_CACHE_DIR/quota-state.json}"
+
+is_active_turn=0
+case "$agent_state" in
+    thinking|working|running) is_active_turn=1 ;;
+esac
+
+# Track quota snapshot age and project burn rate per session+bucket.
+# Outputs: "<age_seconds>\t<effective_rem>\t<is_projected_0_or_1>"
+update_and_project_quota() {
+    local bkey="$1"
+    local braw="$2"
+    local brem="$3"
+    if [[ -z "$bkey" || -z "$braw" || -z "$brem" || ! "$now_ts" =~ ^[0-9]+$ ]]; then
+        printf "0\t%s\t0" "$brem"
+        return 0
+    fi
+    local skey="${session_id}:${bkey}"
+    local cur_state="{}"
+    if [[ -f "$quota_state_file" ]]; then
+        cur_state=$(cat "$quota_state_file" 2>/dev/null || printf "{}")
+    fi
+    local snap_raw snap_rem snap_ts snap_tok prev_rem prev_ts prev_tok
+    IFS=$'\t' read -r snap_raw snap_rem snap_ts snap_tok prev_rem prev_ts prev_tok <<< "$(printf "%s" "$cur_state" | jq -r --arg k "$skey" '
+        .[$k] | if . != null then
+            "\(.raw // "")\t\(.rem // "")\t\(.ts // "")\t\(.tokens // 0)\t\(.prev_rem // "")\t\(.prev_ts // "")\t\(.prev_tokens // 0)"
+        else "" end
+    ' 2>/dev/null || true)"
+
+    if [[ -z "$snap_raw" || "$snap_raw" != "$braw" || ! "$snap_ts" =~ ^[0-9]+$ ]]; then
+        prev_rem="$snap_rem"
+        prev_ts="$snap_ts"
+        prev_tok="${snap_tok:-0}"
+        snap_raw="$braw"
+        snap_rem="$brem"
+        snap_ts="$now_ts"
+        snap_tok="$curr_tokens"
+        mkdir -p "$(dirname "$quota_state_file")" 2>/dev/null || true
+        local new_state
+        new_state=$(printf "%s" "$cur_state" | jq -c \
+            --arg k "$skey" \
+            --arg raw "$braw" \
+            --argjson rem "${brem:-0}" \
+            --argjson ts "$now_ts" \
+            --argjson tok "${curr_tokens:-0}" '
+            . + {($k): {
+                raw: $raw,
+                rem: $rem,
+                ts: $ts,
+                tokens: $tok,
+                prev_raw: (.[$k].raw // null),
+                prev_rem: (.[$k].rem // null),
+                prev_ts: (.[$k].ts // null),
+                prev_tokens: (.[$k].tokens // 0)
+            }}
+        ' 2>/dev/null || true)
+        if [[ -n "$new_state" ]]; then
+            printf "%s\n" "$new_state" > "$quota_state_file" 2>/dev/null || true
+        fi
+    fi
+
+    local age=$(( now_ts - snap_ts ))
+    if (( age < 0 )); then age=0; fi
+
+    local eff_rem="$brem"
+    local is_proj=0
+    if (( is_active_turn == 1 && age >= stale_threshold )); then
+        if [[ "$prev_rem" =~ ^[0-9]+$ && "$prev_ts" =~ ^[0-9]+$ ]] && (( prev_rem > brem && snap_ts > prev_ts )); then
+            local delta_rem=$(( prev_rem - brem ))
+            local delta_ts=$(( snap_ts - prev_ts ))
+            local drop_time=$(( delta_rem * age / delta_ts ))
+            local drop_tok=0
+            if [[ "$prev_tok" =~ ^[0-9]+$ && "$snap_tok" =~ ^[0-9]+$ ]] && (( snap_tok > prev_tok && curr_tokens > snap_tok )); then
+                drop_tok=$(( delta_rem * (curr_tokens - snap_tok) / (snap_tok - prev_tok) ))
+            fi
+            local drop="$drop_time"
+            if (( drop_tok > drop )); then drop="$drop_tok"; fi
+            if (( drop > 0 )); then
+                eff_rem=$(( brem - drop ))
+                if (( eff_rem < 0 )); then eff_rem=0; fi
+                is_proj=1
+            fi
+        fi
+    fi
+    printf "%d\t%s\t%d" "$age" "$eff_rem" "$is_proj"
+}
+
+IFS=$'\t' read -r quota_5h_age quota_5h_eff quota_5h_proj <<< "$(update_and_project_quota "$quota_5h_key" "$quota_5h_raw" "$quota_5h_rem")"
+IFS=$'\t' read -r quota_wk_age quota_wk_eff quota_wk_proj <<< "$(update_and_project_quota "$quota_wk_key" "$quota_wk_raw" "$quota_wk_rem")"
 
 # --- 4. Theming & Colors ---
 C_RESET="\e[0m"
@@ -145,6 +273,7 @@ if [[ "${AGY_CLASSIC_MODE:-0}" == "1" ]]; then
     ICON_SUBAGENTS="[SUB]"
     ICON_TASKS="[TSK]"
     ICON_QUOTA_RESET=" "
+    ICON_QUOTA_STALE="~"
 else
     ICON_STATUS_IDLE=""
     ICON_STATUS_THINKING="󰟷"
@@ -157,6 +286,7 @@ else
     ICON_SUBAGENTS="󱙺"
     ICON_TASKS="󰦕"
     ICON_QUOTA_RESET="󱎫"
+    ICON_QUOTA_STALE="⟳"
 fi
 
 # --- 6. Segment Assembly & Line Packing ---
@@ -224,23 +354,39 @@ fi
 
 # 7. Quota 5H
 if [[ -n "$quota_5h_rem" ]]; then
+    q5h_val="${quota_5h_eff:-$quota_5h_rem}"
+    q5h_prefix=""
+    if (( quota_5h_proj == 1 )); then q5h_prefix="~"; fi
     q5h_color="${C_FG_READY}"
-    if (( quota_5h_rem <= 15 )); then q5h_color="${C_FG_CRIT}"
-    elif (( quota_5h_rem <= 40 )); then q5h_color="${C_FG_WARN}"
+    if (( q5h_val <= 15 )); then q5h_color="${C_FG_CRIT}"
+    elif (( q5h_val <= 40 )); then q5h_color="${C_FG_WARN}"
     fi
-    q5_content="${C_FG_GRAY}5H: ${q5h_color}${quota_5h_rem}%${C_RESET}"
+    q5_content="${C_FG_GRAY}5H: ${q5h_color}${q5h_prefix}${q5h_val}%${C_RESET}"
+    if (( is_active_turn == 1 && quota_5h_age >= stale_threshold )); then
+        stale_fmt=$(format_reset "$quota_5h_age")
+        if [[ -n "$stale_fmt" ]]; then q5_content+="${C_FG_WARN} ${ICON_QUOTA_STALE}${stale_fmt}${C_RESET}"; fi
+    fi
     rst_fmt=$(format_reset "$quota_5h_rst")
     if [[ -n "$rst_fmt" ]]; then q5_content+="${C_FG_GRAY} ${ICON_QUOTA_RESET} ${rst_fmt}${C_RESET}"; fi
     SEG_CONTENT+=("$q5_content")
+elif [[ -n "$quota_wk_rem" ]]; then
+    SEG_CONTENT+=("${C_FG_GRAY}5H: N/A${C_RESET}")
 fi
 
 # 8. Quota 7D
 if [[ -n "$quota_wk_rem" ]]; then
+    qwk_val="${quota_wk_eff:-$quota_wk_rem}"
+    qwk_prefix=""
+    if (( quota_wk_proj == 1 )); then qwk_prefix="~"; fi
     qwk_color="${C_FG_READY}"
-    if (( quota_wk_rem <= 15 )); then qwk_color="${C_FG_CRIT}"
-    elif (( quota_wk_rem <= 40 )); then qwk_color="${C_FG_WARN}"
+    if (( qwk_val <= 15 )); then qwk_color="${C_FG_CRIT}"
+    elif (( qwk_val <= 40 )); then qwk_color="${C_FG_WARN}"
     fi
-    qwk_content="${C_FG_GRAY}7D: ${qwk_color}${quota_wk_rem}%${C_RESET}"
+    qwk_content="${C_FG_GRAY}7D: ${qwk_color}${qwk_prefix}${qwk_val}%${C_RESET}"
+    if (( is_active_turn == 1 && quota_wk_age >= stale_threshold )); then
+        stale_fmt=$(format_reset "$quota_wk_age")
+        if [[ -n "$stale_fmt" ]]; then qwk_content+="${C_FG_WARN} ${ICON_QUOTA_STALE}${stale_fmt}${C_RESET}"; fi
+    fi
     rst_fmt=$(format_reset "$quota_wk_rst")
     if [[ -n "$rst_fmt" ]]; then qwk_content+="${C_FG_GRAY} ${ICON_QUOTA_RESET} ${rst_fmt}${C_RESET}"; fi
     SEG_CONTENT+=("$qwk_content")

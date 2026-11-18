@@ -3,6 +3,8 @@
 setup() {
   export DIR="$BATS_TEST_DIRNAME/.."
   export SCRIPT="$DIR/statusline.sh"
+  export AGY_CACHE_DIR="$BATS_TEST_TMPDIR/cache"
+  unset AGY_STATUSLINE_DEBUG AGY_STATUSLINE_DEBUG_FILE AGY_STATUSLINE_DEBUG_FLAG
 }
 
 @test "wraps to multiple lines on small width (terminal_width=40)" {
@@ -258,4 +260,148 @@ setup() {
   run bash -c "echo '{\"product\":\"A\",\"model\":{\"display_name\":\"B\"},\"terminal_width\":200}' | bash \"$SCRIPT\""
   [ "$status" -eq 0 ]
   [[ ! "$output" == *""* ]] || false
+}
+
+@test "debug capture is off by default and writes nothing" {
+  export AGY_STATUSLINE_DEBUG_FILE="$BATS_TEST_TMPDIR/payloads.jsonl"
+  unset AGY_STATUSLINE_DEBUG
+  run bash -c "echo '{\"model\":{\"display_name\":\"M\"},\"terminal_width\":200}' | bash \"$SCRIPT\""
+  [ "$status" -eq 0 ]
+  [ ! -e "$AGY_STATUSLINE_DEBUG_FILE" ]
+}
+
+@test "debug capture appends one JSONL line per invocation with ts and payload" {
+  export AGY_STATUSLINE_DEBUG=1
+  export AGY_STATUSLINE_DEBUG_FILE="$BATS_TEST_TMPDIR/sub/payloads.jsonl"
+  run bash -c "echo '{\"model\":{\"display_name\":\"M\"},\"quota\":{\"x-5h\":{\"remaining_fraction\":0.5}}}' | bash \"$SCRIPT\""
+  [ "$status" -eq 0 ]
+  run bash -c "echo '{\"model\":{\"display_name\":\"N\"}}' | bash \"$SCRIPT\""
+  [ "$status" -eq 0 ]
+  [ "$(wc -l < "$AGY_STATUSLINE_DEBUG_FILE" | tr -d ' ')" -eq 2 ]
+  run jq -r 'select(.payload.model.display_name == "M") | .payload.quota["x-5h"].remaining_fraction' "$AGY_STATUSLINE_DEBUG_FILE"
+  [ "$output" = "0.5" ]
+  run jq -r '.ts | type' "$AGY_STATUSLINE_DEBUG_FILE"
+  [ "${lines[0]}" = "string" ]
+}
+
+@test "debug capture failure does not break rendering" {
+  export AGY_STATUSLINE_DEBUG=1
+  export AGY_STATUSLINE_DEBUG_FILE="/dev/null/nope/payloads.jsonl"
+  run bash -c "echo '{\"model\":{\"display_name\":\"Still\"},\"terminal_width\":200}' | bash \"$SCRIPT\""
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Still"* ]]
+}
+
+@test "debug capture activates when debug.on sentinel file exists without env var" {
+  unset AGY_STATUSLINE_DEBUG
+  mkdir -p "$AGY_CACHE_DIR"
+  : > "$AGY_CACHE_DIR/debug.on"
+  run bash -c "echo '{\"model\":{\"display_name\":\"Gemini 4 Argon (High)\"},\"quota\":{\"argon-wk\":{\"remaining_fraction\":0.75}}}' | bash \"$SCRIPT\""
+  [ "$status" -eq 0 ]
+  [ -f "$AGY_CACHE_DIR/payloads.jsonl" ]
+  run jq -r '.payload.model.display_name' "$AGY_CACHE_DIR/payloads.jsonl"
+  [ "$output" = "Gemini 4 Argon (High)" ]
+}
+
+@test "Quota: routes Gemini 4 Argon (High) to gemini-argon-wtu-weekly and shows 5H: N/A fallback" {
+  payload='{"model":{"display_name":"Gemini 4 Argon (High)"},"terminal_width":200,"quota":{"3p-5h":{"remaining_fraction":1,"reset_in_seconds":17742},"3p-weekly":{"remaining_fraction":1,"reset_in_seconds":604542},"gemini-5h":{"remaining_fraction":0.83695006,"reset_in_seconds":8921},"gemini-argon-wtu-weekly":{"remaining_fraction":0.7551988,"reset_in_seconds":567381},"gemini-weekly":{"remaining_fraction":0.85892534,"reset_in_seconds":565847}}}'
+  run bash -c "printf '%s' '$payload' | bash \"$SCRIPT\""
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"5H: N/A"* ]] || false
+  [[ "$output" == *"7D: "*"75%"*"6d 13h"* ]] || false
+  [[ "$output" != *"85%"* ]] || false
+}
+
+@test "Quota: routes Argon 5h bucket when present alongside argon weekly" {
+  payload='{"model":{"display_name":"Gemini 4 Argon (High)"},"terminal_width":200,"quota":{"gemini-argon-wtu-5h":{"remaining_fraction":0.61,"reset_in_seconds":3600},"gemini-argon-wtu-weekly":{"remaining_fraction":0.7551988,"reset_in_seconds":567381}}}'
+  run bash -c "printf '%s' '$payload' | bash \"$SCRIPT\""
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"5H: "*"61%"*"1h"* ]] || false
+  [[ "$output" == *"7D: "*"75%"*"6d 13h"* ]] || false
+}
+
+@test "Quota: routes non-Argon Gemini (Gemini 4 Hydrogen) to gemini-5h and gemini-weekly even when argon bucket is present" {
+  payload='{"model":{"display_name":"Gemini 4 Hydrogen (High)"},"terminal_width":200,"quota":{"3p-5h":{"remaining_fraction":1,"reset_in_seconds":17742},"3p-weekly":{"remaining_fraction":1,"reset_in_seconds":604542},"gemini-5h":{"remaining_fraction":0.83695006,"reset_in_seconds":8921},"gemini-argon-wtu-weekly":{"remaining_fraction":0.7551988,"reset_in_seconds":567381},"gemini-weekly":{"remaining_fraction":0.85892534,"reset_in_seconds":565847}}}'
+  run bash -c "printf '%s' '$payload' | bash \"$SCRIPT\""
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"5H: "*"83%"* ]] || false
+  [[ "$output" == *"7D: "*"85%"* ]] || false
+  [[ "$output" != *"75%"* ]] || false
+}
+
+@test "Quota staleness: shows ⟳4m during active turn when quota is unchanged for >=120s" {
+  payload='{"agent_state":"working","model":{"display_name":"gemini-2.5-pro"},"terminal_width":200,"quota":{"gemini-5h":{"remaining_fraction":0.5,"reset_in_seconds":3600},"gemini-weekly":{"remaining_fraction":0.8,"reset_in_seconds":86400}}}'
+  run bash -c "printf '%s' '$payload' | AGY_STATUSLINE_NOW=1000 bash \"$SCRIPT\""
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"⟳"* ]] || false
+
+  run bash -c "printf '%s' '$payload' | AGY_STATUSLINE_NOW=1240 bash \"$SCRIPT\""
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"5H: "*"50%"*"⟳4m"* ]] || false
+}
+
+@test "Quota staleness: hides staleness badge when agent is idle or when quota value changes" {
+  payload_work='{"agent_state":"working","model":{"display_name":"gemini-2.5-pro"},"terminal_width":200,"quota":{"gemini-5h":{"remaining_fraction":0.5,"reset_in_seconds":3600}}}'
+  payload_idle='{"agent_state":"idle","model":{"display_name":"gemini-2.5-pro"},"terminal_width":200,"quota":{"gemini-5h":{"remaining_fraction":0.5,"reset_in_seconds":3600}}}'
+  payload_fresh='{"agent_state":"working","model":{"display_name":"gemini-2.5-pro"},"terminal_width":200,"quota":{"gemini-5h":{"remaining_fraction":0.45,"reset_in_seconds":3500}}}'
+
+  run bash -c "printf '%s' '$payload_work' | AGY_STATUSLINE_NOW=1000 bash \"$SCRIPT\""
+  [ "$status" -eq 0 ]
+  run bash -c "printf '%s' '$payload_idle' | AGY_STATUSLINE_NOW=1300 bash \"$SCRIPT\""
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"⟳"* ]] || false
+
+  run bash -c "printf '%s' '$payload_fresh' | AGY_STATUSLINE_NOW=1300 bash \"$SCRIPT\""
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"45%"* ]] || false
+  [[ "$output" != *"⟳"* ]] || false
+}
+
+@test "Quota staleness: Classic Mode uses ASCII (~4m) and cache I/O failure is silent" {
+  payload='{"agent_state":"thinking","model":{"display_name":"gemini-2.5-pro"},"terminal_width":200,"quota":{"gemini-5h":{"remaining_fraction":0.5,"reset_in_seconds":3600}}}'
+  run bash -c "printf '%s' '$payload' | AGY_CLASSIC_MODE=1 AGY_STATUSLINE_NOW=1000 bash \"$SCRIPT\""
+  [ "$status" -eq 0 ]
+  run bash -c "printf '%s' '$payload' | AGY_CLASSIC_MODE=1 AGY_STATUSLINE_NOW=1240 bash \"$SCRIPT\""
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"~4m"* ]] || false
+  [[ "$output" != *"⟳"* ]] || false
+
+  run bash -c "printf '%s' '$payload' | AGY_CACHE_DIR=/dev/null/nope AGY_STATUSLINE_NOW=1240 bash \"$SCRIPT\""
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"50%"* ]] || false
+}
+
+@test "Quota burn-rate: projects remaining percentage and triggers WARN/CRIT colors during long active turn" {
+  p1='{"agent_state":"idle","model":{"display_name":"gemini-2.5-pro"},"terminal_width":200,"quota":{"gemini-5h":{"remaining_fraction":0.55,"reset_in_seconds":3600}}}'
+  p2='{"agent_state":"working","model":{"display_name":"gemini-2.5-pro"},"terminal_width":200,"quota":{"gemini-5h":{"remaining_fraction":0.45,"reset_in_seconds":3500}}}'
+
+  run bash -c "printf '%s' '$p1' | AGY_STATUSLINE_NOW=1000 bash \"$SCRIPT\""
+  [ "$status" -eq 0 ]
+  run bash -c "printf '%s' '$p2' | AGY_STATUSLINE_NOW=1100 bash \"$SCRIPT\""
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"45%"* ]] || false
+
+  # 200s into active turn with frozen 45%: burn rate 10%/100s -> ~25% (WARN color 38;5;214m)
+  run bash -c "printf '%s' '$p2' | AGY_STATUSLINE_NOW=1300 bash \"$SCRIPT\""
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"38;5;214m~25%"*"⟳3m"* ]] || false
+
+  # 320s into active turn with frozen 45%: projected ~13% (CRIT color 38;5;196m)
+  run bash -c "printf '%s' '$p2' | AGY_STATUSLINE_NOW=1420 bash \"$SCRIPT\""
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"38;5;196m~13%"* ]] || false
+}
+
+@test "Quota burn-rate: uses mid-turn live token growth to project faster quota drop" {
+  p1='{"agent_state":"idle","model":{"display_name":"gemini-2.5-pro"},"context_window":{"total_input_tokens":10000,"total_output_tokens":0},"terminal_width":200,"quota":{"gemini-5h":{"remaining_fraction":0.50,"reset_in_seconds":3600}}}'
+  p2='{"agent_state":"working","model":{"display_name":"gemini-2.5-pro"},"context_window":{"total_input_tokens":20000,"total_output_tokens":0},"terminal_width":200,"quota":{"gemini-5h":{"remaining_fraction":0.45,"reset_in_seconds":3300}}}'
+  p3='{"agent_state":"working","model":{"display_name":"gemini-2.5-pro"},"context_window":{"total_input_tokens":80000,"total_output_tokens":0},"terminal_width":200,"quota":{"gemini-5h":{"remaining_fraction":0.45,"reset_in_seconds":3180}}}'
+
+  run bash -c "printf '%s' '$p1' | AGY_STATUSLINE_NOW=1000 bash \"$SCRIPT\""
+  [ "$status" -eq 0 ]
+  run bash -c "printf '%s' '$p2' | AGY_STATUSLINE_NOW=1300 bash \"$SCRIPT\""
+  [ "$status" -eq 0 ]
+  run bash -c "printf '%s' '$p3' | AGY_STATUSLINE_NOW=1420 bash \"$SCRIPT\""
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"38;5;196m~15%"* ]] || false
 }
