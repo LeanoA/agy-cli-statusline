@@ -370,3 +370,38 @@ setup() {
   [ "$status" -eq 0 ]
   [[ "$output" == *"50%"* ]] || false
 }
+
+@test "Quota burn-rate: projects remaining percentage and triggers WARN/CRIT colors during long active turn" {
+  p1='{"agent_state":"idle","model":{"display_name":"gemini-2.5-pro"},"terminal_width":200,"quota":{"gemini-5h":{"remaining_fraction":0.55,"reset_in_seconds":3600}}}'
+  p2='{"agent_state":"working","model":{"display_name":"gemini-2.5-pro"},"terminal_width":200,"quota":{"gemini-5h":{"remaining_fraction":0.45,"reset_in_seconds":3500}}}'
+
+  run bash -c "printf '%s' '$p1' | AGY_STATUSLINE_NOW=1000 bash \"$SCRIPT\""
+  [ "$status" -eq 0 ]
+  run bash -c "printf '%s' '$p2' | AGY_STATUSLINE_NOW=1100 bash \"$SCRIPT\""
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"45%"* ]] || false
+
+  # 200s into active turn with frozen 45%: burn rate 10%/100s -> ~25% (WARN color 38;5;214m)
+  run bash -c "printf '%s' '$p2' | AGY_STATUSLINE_NOW=1300 bash \"$SCRIPT\""
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"38;5;214m~25%"*"⟳3m"* ]] || false
+
+  # 320s into active turn with frozen 45%: projected ~13% (CRIT color 38;5;196m)
+  run bash -c "printf '%s' '$p2' | AGY_STATUSLINE_NOW=1420 bash \"$SCRIPT\""
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"38;5;196m~13%"* ]] || false
+}
+
+@test "Quota burn-rate: uses mid-turn live token growth to project faster quota drop" {
+  p1='{"agent_state":"idle","model":{"display_name":"gemini-2.5-pro"},"context_window":{"total_input_tokens":10000,"total_output_tokens":0},"terminal_width":200,"quota":{"gemini-5h":{"remaining_fraction":0.50,"reset_in_seconds":3600}}}'
+  p2='{"agent_state":"working","model":{"display_name":"gemini-2.5-pro"},"context_window":{"total_input_tokens":20000,"total_output_tokens":0},"terminal_width":200,"quota":{"gemini-5h":{"remaining_fraction":0.45,"reset_in_seconds":3300}}}'
+  p3='{"agent_state":"working","model":{"display_name":"gemini-2.5-pro"},"context_window":{"total_input_tokens":80000,"total_output_tokens":0},"terminal_width":200,"quota":{"gemini-5h":{"remaining_fraction":0.45,"reset_in_seconds":3180}}}'
+
+  run bash -c "printf '%s' '$p1' | AGY_STATUSLINE_NOW=1000 bash \"$SCRIPT\""
+  [ "$status" -eq 0 ]
+  run bash -c "printf '%s' '$p2' | AGY_STATUSLINE_NOW=1300 bash \"$SCRIPT\""
+  [ "$status" -eq 0 ]
+  run bash -c "printf '%s' '$p3' | AGY_STATUSLINE_NOW=1420 bash \"$SCRIPT\""
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"38;5;196m~15%"* ]] || false
+}

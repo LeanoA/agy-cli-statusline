@@ -103,17 +103,24 @@ IFS=$'\t' read -r quota_5h_key quota_5h_raw quota_5h_rem quota_5h_rst <<< "$buck
 IFS=$'\t' read -r quota_wk_key quota_wk_raw quota_wk_rem quota_wk_rst <<< "$bucket_wk"
 
 session_id=$(printf "%s" "$json_payload" | jq -r '.session_id // "default"')
+curr_tokens=$(printf "%s" "$json_payload" | jq -r '((.context_window.total_input_tokens // 0) + (.context_window.total_output_tokens // 0)) | floor')
 now_ts="${AGY_STATUSLINE_NOW:-$(date +%s)}"
 stale_threshold="${AGY_QUOTA_STALE_SECONDS:-120}"
 quota_state_file="${AGY_QUOTA_STATE_FILE:-$AGY_CACHE_DIR/quota-state.json}"
 
-# Track quota snapshot age per session+bucket and return staleness age in seconds
-update_and_get_quota_age() {
+is_active_turn=0
+case "$agent_state" in
+    thinking|working|running) is_active_turn=1 ;;
+esac
+
+# Track quota snapshot age and project burn rate per session+bucket.
+# Outputs: "<age_seconds>\t<effective_rem>\t<is_projected_0_or_1>"
+update_and_project_quota() {
     local bkey="$1"
     local braw="$2"
     local brem="$3"
-    if [[ -z "$bkey" || -z "$braw" || ! "$now_ts" =~ ^[0-9]+$ ]]; then
-        printf "0"
+    if [[ -z "$bkey" || -z "$braw" || -z "$brem" || ! "$now_ts" =~ ^[0-9]+$ ]]; then
+        printf "0\t%s\t0" "$brem"
         return 0
     fi
     local skey="${session_id}:${bkey}"
@@ -121,27 +128,38 @@ update_and_get_quota_age() {
     if [[ -f "$quota_state_file" ]]; then
         cur_state=$(cat "$quota_state_file" 2>/dev/null || printf "{}")
     fi
-    local prev_raw prev_ts
-    IFS=$'\t' read -r prev_raw prev_ts <<< "$(printf "%s" "$cur_state" | jq -r --arg k "$skey" '.[$k] | if . != null then "\(.raw // "")\t\(.ts // "")" else "" end' 2>/dev/null || true)"
+    local snap_raw snap_rem snap_ts snap_tok prev_rem prev_ts prev_tok
+    IFS=$'\t' read -r snap_raw snap_rem snap_ts snap_tok prev_rem prev_ts prev_tok <<< "$(printf "%s" "$cur_state" | jq -r --arg k "$skey" '
+        .[$k] | if . != null then
+            "\(.raw // "")\t\(.rem // "")\t\(.ts // "")\t\(.tokens // 0)\t\(.prev_rem // "")\t\(.prev_ts // "")\t\(.prev_tokens // 0)"
+        else "" end
+    ' 2>/dev/null || true)"
 
-    local snap_ts="$now_ts"
-    local new_state=""
-    if [[ -n "$prev_raw" && "$prev_raw" == "$braw" && "$prev_ts" =~ ^[0-9]+$ ]]; then
-        snap_ts="$prev_ts"
-    else
+    if [[ -z "$snap_raw" || "$snap_raw" != "$braw" || ! "$snap_ts" =~ ^[0-9]+$ ]]; then
+        prev_rem="$snap_rem"
+        prev_ts="$snap_ts"
+        prev_tok="${snap_tok:-0}"
+        snap_raw="$braw"
+        snap_rem="$brem"
+        snap_ts="$now_ts"
+        snap_tok="$curr_tokens"
         mkdir -p "$(dirname "$quota_state_file")" 2>/dev/null || true
+        local new_state
         new_state=$(printf "%s" "$cur_state" | jq -c \
             --arg k "$skey" \
             --arg raw "$braw" \
             --argjson rem "${brem:-0}" \
-            --argjson ts "$now_ts" '
+            --argjson ts "$now_ts" \
+            --argjson tok "${curr_tokens:-0}" '
             . + {($k): {
                 raw: $raw,
                 rem: $rem,
                 ts: $ts,
+                tokens: $tok,
                 prev_raw: (.[$k].raw // null),
                 prev_rem: (.[$k].rem // null),
-                prev_ts: (.[$k].ts // null)
+                prev_ts: (.[$k].ts // null),
+                prev_tokens: (.[$k].tokens // 0)
             }}
         ' 2>/dev/null || true)
         if [[ -n "$new_state" ]]; then
@@ -151,16 +169,32 @@ update_and_get_quota_age() {
 
     local age=$(( now_ts - snap_ts ))
     if (( age < 0 )); then age=0; fi
-    printf "%d" "$age"
+
+    local eff_rem="$brem"
+    local is_proj=0
+    if (( is_active_turn == 1 && age >= stale_threshold )); then
+        if [[ "$prev_rem" =~ ^[0-9]+$ && "$prev_ts" =~ ^[0-9]+$ ]] && (( prev_rem > brem && snap_ts > prev_ts )); then
+            local delta_rem=$(( prev_rem - brem ))
+            local delta_ts=$(( snap_ts - prev_ts ))
+            local drop_time=$(( delta_rem * age / delta_ts ))
+            local drop_tok=0
+            if [[ "$prev_tok" =~ ^[0-9]+$ && "$snap_tok" =~ ^[0-9]+$ ]] && (( snap_tok > prev_tok && curr_tokens > snap_tok )); then
+                drop_tok=$(( delta_rem * (curr_tokens - snap_tok) / (snap_tok - prev_tok) ))
+            fi
+            local drop="$drop_time"
+            if (( drop_tok > drop )); then drop="$drop_tok"; fi
+            if (( drop > 0 )); then
+                eff_rem=$(( brem - drop ))
+                if (( eff_rem < 0 )); then eff_rem=0; fi
+                is_proj=1
+            fi
+        fi
+    fi
+    printf "%d\t%s\t%d" "$age" "$eff_rem" "$is_proj"
 }
 
-quota_5h_age=$(update_and_get_quota_age "$quota_5h_key" "$quota_5h_raw" "$quota_5h_rem")
-quota_wk_age=$(update_and_get_quota_age "$quota_wk_key" "$quota_wk_raw" "$quota_wk_rem")
-
-is_active_turn=0
-case "$agent_state" in
-    thinking|working|running) is_active_turn=1 ;;
-esac
+IFS=$'\t' read -r quota_5h_age quota_5h_eff quota_5h_proj <<< "$(update_and_project_quota "$quota_5h_key" "$quota_5h_raw" "$quota_5h_rem")"
+IFS=$'\t' read -r quota_wk_age quota_wk_eff quota_wk_proj <<< "$(update_and_project_quota "$quota_wk_key" "$quota_wk_raw" "$quota_wk_rem")"
 
 # --- 4. Theming & Colors ---
 C_RESET="\e[0m"
@@ -320,11 +354,14 @@ fi
 
 # 7. Quota 5H
 if [[ -n "$quota_5h_rem" ]]; then
+    q5h_val="${quota_5h_eff:-$quota_5h_rem}"
+    q5h_prefix=""
+    if (( quota_5h_proj == 1 )); then q5h_prefix="~"; fi
     q5h_color="${C_FG_READY}"
-    if (( quota_5h_rem <= 15 )); then q5h_color="${C_FG_CRIT}"
-    elif (( quota_5h_rem <= 40 )); then q5h_color="${C_FG_WARN}"
+    if (( q5h_val <= 15 )); then q5h_color="${C_FG_CRIT}"
+    elif (( q5h_val <= 40 )); then q5h_color="${C_FG_WARN}"
     fi
-    q5_content="${C_FG_GRAY}5H: ${q5h_color}${quota_5h_rem}%${C_RESET}"
+    q5_content="${C_FG_GRAY}5H: ${q5h_color}${q5h_prefix}${q5h_val}%${C_RESET}"
     if (( is_active_turn == 1 && quota_5h_age >= stale_threshold )); then
         stale_fmt=$(format_reset "$quota_5h_age")
         if [[ -n "$stale_fmt" ]]; then q5_content+="${C_FG_WARN} ${ICON_QUOTA_STALE}${stale_fmt}${C_RESET}"; fi
@@ -338,11 +375,14 @@ fi
 
 # 8. Quota 7D
 if [[ -n "$quota_wk_rem" ]]; then
+    qwk_val="${quota_wk_eff:-$quota_wk_rem}"
+    qwk_prefix=""
+    if (( quota_wk_proj == 1 )); then qwk_prefix="~"; fi
     qwk_color="${C_FG_READY}"
-    if (( quota_wk_rem <= 15 )); then qwk_color="${C_FG_CRIT}"
-    elif (( quota_wk_rem <= 40 )); then qwk_color="${C_FG_WARN}"
+    if (( qwk_val <= 15 )); then qwk_color="${C_FG_CRIT}"
+    elif (( qwk_val <= 40 )); then qwk_color="${C_FG_WARN}"
     fi
-    qwk_content="${C_FG_GRAY}7D: ${qwk_color}${quota_wk_rem}%${C_RESET}"
+    qwk_content="${C_FG_GRAY}7D: ${qwk_color}${qwk_prefix}${qwk_val}%${C_RESET}"
     if (( is_active_turn == 1 && quota_wk_age >= stale_threshold )); then
         stale_fmt=$(format_reset "$quota_wk_age")
         if [[ -n "$stale_fmt" ]]; then qwk_content+="${C_FG_WARN} ${ICON_QUOTA_STALE}${stale_fmt}${C_RESET}"; fi

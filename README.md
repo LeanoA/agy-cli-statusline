@@ -58,7 +58,9 @@ The status line dynamically renders the following data from the JSON payload:
 *   **Git**: Current branch and dirty state indicator.
 *   **Context**: Progress bar and percentage for context window usage.
 *   **Workers**: Active subagents and background tasks.
-*   **Quotas**: Remaining 5H and 7D API quotas, plus reset times.
+*   **Quotas**: Remaining 5H and 7D API quotas, plus reset times:
+    *   **Dynamic Bucket Routing**: Automatically selects Argon (`gemini-argon-wtu-weekly`), standard Gemini (`gemini-5h` / `gemini-weekly`), or third-party (`3p-5h` / `3p-weekly`) quota buckets based on the active model. When a model only has a 7D bucket (such as Argon WTU weekly), `5H: N/A` is rendered to preserve the two-column quota layout.
+    *   **Mid-Turn Staleness & Burn-Rate Projection**: Because `agy` only refreshes `.quota` from the backend at the end of a prompt, long active turns (`thinking`/`working`) display a staleness age badge (`⟳Xm`, configurable via `AGY_QUOTA_STALE_SECONDS`, default `120`) and project remaining quota (`~X%`) from observed time/token burn rate, applying warning (`<=40%`) and critical (`<=15%`) colors to the projected value before quota runs out.
 
 ## Classic Mode
 
