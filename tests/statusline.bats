@@ -328,3 +328,45 @@ setup() {
   [[ "$output" == *"7D: "*"85%"* ]] || false
   [[ "$output" != *"75%"* ]] || false
 }
+
+@test "Quota staleness: shows ⟳4m during active turn when quota is unchanged for >=120s" {
+  payload='{"agent_state":"working","model":{"display_name":"gemini-2.5-pro"},"terminal_width":200,"quota":{"gemini-5h":{"remaining_fraction":0.5,"reset_in_seconds":3600},"gemini-weekly":{"remaining_fraction":0.8,"reset_in_seconds":86400}}}'
+  run bash -c "printf '%s' '$payload' | AGY_STATUSLINE_NOW=1000 bash \"$SCRIPT\""
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"⟳"* ]] || false
+
+  run bash -c "printf '%s' '$payload' | AGY_STATUSLINE_NOW=1240 bash \"$SCRIPT\""
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"5H: "*"50%"*"⟳4m"* ]] || false
+}
+
+@test "Quota staleness: hides staleness badge when agent is idle or when quota value changes" {
+  payload_work='{"agent_state":"working","model":{"display_name":"gemini-2.5-pro"},"terminal_width":200,"quota":{"gemini-5h":{"remaining_fraction":0.5,"reset_in_seconds":3600}}}'
+  payload_idle='{"agent_state":"idle","model":{"display_name":"gemini-2.5-pro"},"terminal_width":200,"quota":{"gemini-5h":{"remaining_fraction":0.5,"reset_in_seconds":3600}}}'
+  payload_fresh='{"agent_state":"working","model":{"display_name":"gemini-2.5-pro"},"terminal_width":200,"quota":{"gemini-5h":{"remaining_fraction":0.45,"reset_in_seconds":3500}}}'
+
+  run bash -c "printf '%s' '$payload_work' | AGY_STATUSLINE_NOW=1000 bash \"$SCRIPT\""
+  [ "$status" -eq 0 ]
+  run bash -c "printf '%s' '$payload_idle' | AGY_STATUSLINE_NOW=1300 bash \"$SCRIPT\""
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"⟳"* ]] || false
+
+  run bash -c "printf '%s' '$payload_fresh' | AGY_STATUSLINE_NOW=1300 bash \"$SCRIPT\""
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"45%"* ]] || false
+  [[ "$output" != *"⟳"* ]] || false
+}
+
+@test "Quota staleness: Classic Mode uses ASCII (~4m) and cache I/O failure is silent" {
+  payload='{"agent_state":"thinking","model":{"display_name":"gemini-2.5-pro"},"terminal_width":200,"quota":{"gemini-5h":{"remaining_fraction":0.5,"reset_in_seconds":3600}}}'
+  run bash -c "printf '%s' '$payload' | AGY_CLASSIC_MODE=1 AGY_STATUSLINE_NOW=1000 bash \"$SCRIPT\""
+  [ "$status" -eq 0 ]
+  run bash -c "printf '%s' '$payload' | AGY_CLASSIC_MODE=1 AGY_STATUSLINE_NOW=1240 bash \"$SCRIPT\""
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"~4m"* ]] || false
+  [[ "$output" != *"⟳"* ]] || false
+
+  run bash -c "printf '%s' '$payload' | AGY_CACHE_DIR=/dev/null/nope AGY_STATUSLINE_NOW=1240 bash \"$SCRIPT\""
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"50%"* ]] || false
+}

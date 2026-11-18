@@ -102,6 +102,66 @@ fi
 IFS=$'\t' read -r quota_5h_key quota_5h_raw quota_5h_rem quota_5h_rst <<< "$bucket_5h"
 IFS=$'\t' read -r quota_wk_key quota_wk_raw quota_wk_rem quota_wk_rst <<< "$bucket_wk"
 
+session_id=$(printf "%s" "$json_payload" | jq -r '.session_id // "default"')
+now_ts="${AGY_STATUSLINE_NOW:-$(date +%s)}"
+stale_threshold="${AGY_QUOTA_STALE_SECONDS:-120}"
+quota_state_file="${AGY_QUOTA_STATE_FILE:-$AGY_CACHE_DIR/quota-state.json}"
+
+# Track quota snapshot age per session+bucket and return staleness age in seconds
+update_and_get_quota_age() {
+    local bkey="$1"
+    local braw="$2"
+    local brem="$3"
+    if [[ -z "$bkey" || -z "$braw" || ! "$now_ts" =~ ^[0-9]+$ ]]; then
+        printf "0"
+        return 0
+    fi
+    local skey="${session_id}:${bkey}"
+    local cur_state="{}"
+    if [[ -f "$quota_state_file" ]]; then
+        cur_state=$(cat "$quota_state_file" 2>/dev/null || printf "{}")
+    fi
+    local prev_raw prev_ts
+    IFS=$'\t' read -r prev_raw prev_ts <<< "$(printf "%s" "$cur_state" | jq -r --arg k "$skey" '.[$k] | if . != null then "\(.raw // "")\t\(.ts // "")" else "" end' 2>/dev/null || true)"
+
+    local snap_ts="$now_ts"
+    local new_state=""
+    if [[ -n "$prev_raw" && "$prev_raw" == "$braw" && "$prev_ts" =~ ^[0-9]+$ ]]; then
+        snap_ts="$prev_ts"
+    else
+        mkdir -p "$(dirname "$quota_state_file")" 2>/dev/null || true
+        new_state=$(printf "%s" "$cur_state" | jq -c \
+            --arg k "$skey" \
+            --arg raw "$braw" \
+            --argjson rem "${brem:-0}" \
+            --argjson ts "$now_ts" '
+            . + {($k): {
+                raw: $raw,
+                rem: $rem,
+                ts: $ts,
+                prev_raw: (.[$k].raw // null),
+                prev_rem: (.[$k].rem // null),
+                prev_ts: (.[$k].ts // null)
+            }}
+        ' 2>/dev/null || true)
+        if [[ -n "$new_state" ]]; then
+            printf "%s\n" "$new_state" > "$quota_state_file" 2>/dev/null || true
+        fi
+    fi
+
+    local age=$(( now_ts - snap_ts ))
+    if (( age < 0 )); then age=0; fi
+    printf "%d" "$age"
+}
+
+quota_5h_age=$(update_and_get_quota_age "$quota_5h_key" "$quota_5h_raw" "$quota_5h_rem")
+quota_wk_age=$(update_and_get_quota_age "$quota_wk_key" "$quota_wk_raw" "$quota_wk_rem")
+
+is_active_turn=0
+case "$agent_state" in
+    thinking|working|running) is_active_turn=1 ;;
+esac
+
 # --- 4. Theming & Colors ---
 C_RESET="\e[0m"
 C_FG_WHITE="\e[38;5;255m"
@@ -179,6 +239,7 @@ if [[ "${AGY_CLASSIC_MODE:-0}" == "1" ]]; then
     ICON_SUBAGENTS="[SUB]"
     ICON_TASKS="[TSK]"
     ICON_QUOTA_RESET=" "
+    ICON_QUOTA_STALE="~"
 else
     ICON_STATUS_IDLE=""
     ICON_STATUS_THINKING="󰟷"
@@ -191,6 +252,7 @@ else
     ICON_SUBAGENTS="󱙺"
     ICON_TASKS="󰦕"
     ICON_QUOTA_RESET="󱎫"
+    ICON_QUOTA_STALE="⟳"
 fi
 
 # --- 6. Segment Assembly & Line Packing ---
@@ -263,6 +325,10 @@ if [[ -n "$quota_5h_rem" ]]; then
     elif (( quota_5h_rem <= 40 )); then q5h_color="${C_FG_WARN}"
     fi
     q5_content="${C_FG_GRAY}5H: ${q5h_color}${quota_5h_rem}%${C_RESET}"
+    if (( is_active_turn == 1 && quota_5h_age >= stale_threshold )); then
+        stale_fmt=$(format_reset "$quota_5h_age")
+        if [[ -n "$stale_fmt" ]]; then q5_content+="${C_FG_WARN} ${ICON_QUOTA_STALE}${stale_fmt}${C_RESET}"; fi
+    fi
     rst_fmt=$(format_reset "$quota_5h_rst")
     if [[ -n "$rst_fmt" ]]; then q5_content+="${C_FG_GRAY} ${ICON_QUOTA_RESET} ${rst_fmt}${C_RESET}"; fi
     SEG_CONTENT+=("$q5_content")
@@ -277,6 +343,10 @@ if [[ -n "$quota_wk_rem" ]]; then
     elif (( quota_wk_rem <= 40 )); then qwk_color="${C_FG_WARN}"
     fi
     qwk_content="${C_FG_GRAY}7D: ${qwk_color}${quota_wk_rem}%${C_RESET}"
+    if (( is_active_turn == 1 && quota_wk_age >= stale_threshold )); then
+        stale_fmt=$(format_reset "$quota_wk_age")
+        if [[ -n "$stale_fmt" ]]; then qwk_content+="${C_FG_WARN} ${ICON_QUOTA_STALE}${stale_fmt}${C_RESET}"; fi
+    fi
     rst_fmt=$(format_reset "$quota_wk_rst")
     if [[ -n "$rst_fmt" ]]; then qwk_content+="${C_FG_GRAY} ${ICON_QUOTA_RESET} ${rst_fmt}${C_RESET}"; fi
     SEG_CONTENT+=("$qwk_content")
