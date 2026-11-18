@@ -62,29 +62,45 @@ term_width=$(printf "%s" "$json_payload" | jq -r '.terminal_width // 80')
 task_count=$(printf "%s" "$json_payload" | jq -r '.task_count // 0')
 subagent_count=$(printf "%s" "$json_payload" | jq -r '[ .subagents[]? | select(.status == "running" or .status == "active") ] | length')
 
-# Extract all quota bucket candidates
-_g5h_rem=$(printf "%s" "$json_payload" | jq -r '.quota["gemini-5h"]?.remaining_fraction | if . != null then (. * 100 | floor) else empty end')
-_g5h_rst=$(printf "%s" "$json_payload" | jq -r '.quota["gemini-5h"]?.reset_in_seconds // empty')
-_gwk_rem=$(printf "%s" "$json_payload" | jq -r '.quota["gemini-weekly"]?.remaining_fraction | if . != null then (. * 100 | floor) else empty end')
-_gwk_rst=$(printf "%s" "$json_payload" | jq -r '.quota["gemini-weekly"]?.reset_in_seconds // empty')
+# Dynamically resolve 5h and weekly quota buckets for the active model
+resolve_quota_bucket() {
+    local window_regex="$1"
+    local family_regex="$2"
+    local exclude_regex="${3:-}"
+    printf "%s" "$json_payload" | jq -r \
+        --arg win "$window_regex" \
+        --arg fam "$family_regex" \
+        --arg exc "$exclude_regex" '
+        (.quota // {}) | to_entries
+        | map(select(
+            (.key | test($win; "i")) and
+            (.key | test($fam; "i")) and
+            (($exc == "") or ((.key | test($exc; "i")) | not)) and
+            (.value.remaining_fraction != null)
+          ))
+        | first // empty
+        | "\(.key)\t\(.value.remaining_fraction)\t\((.value.remaining_fraction * 100 | floor))\t\(.value.reset_in_seconds // "")"
+    '
+}
 
-_3p5h_rem=$(printf "%s" "$json_payload" | jq -r '.quota["3p-5h"]?.remaining_fraction | if . != null then (. * 100 | floor) else empty end')
-_3p5h_rst=$(printf "%s" "$json_payload" | jq -r '.quota["3p-5h"]?.reset_in_seconds // empty')
-_3pwk_rem=$(printf "%s" "$json_payload" | jq -r '.quota["3p-weekly"]?.remaining_fraction | if . != null then (. * 100 | floor) else empty end')
-_3pwk_rst=$(printf "%s" "$json_payload" | jq -r '.quota["3p-weekly"]?.reset_in_seconds // empty')
-
-# Route to the correct bucket pair based on model name
-if [[ "$model" =~ [Gg][Ee][Mm][Ii][Nn][Ii] ]]; then
-    quota_5h_rem="$_g5h_rem"
-    quota_5h_rst="$_g5h_rst"
-    quota_wk_rem="$_gwk_rem"
-    quota_wk_rst="$_gwk_rst"
+bucket_5h=""
+bucket_wk=""
+if [[ "$model" =~ [Aa][Rr][Gg][Oo][Nn] ]]; then
+    bucket_5h=$(resolve_quota_bucket "5h$" "argon")
+    bucket_wk=$(resolve_quota_bucket "(weekly|7d|wk)$" "argon")
+    if [[ -z "$bucket_wk" ]]; then
+        bucket_wk=$(resolve_quota_bucket "(weekly|7d|wk)$" "^gemini" "argon")
+    fi
+elif [[ "$model" =~ [Gg][Ee][Mm][Ii][Nn][Ii] ]]; then
+    bucket_5h=$(resolve_quota_bucket "5h$" "^gemini" "argon")
+    bucket_wk=$(resolve_quota_bucket "(weekly|7d|wk)$" "^gemini" "argon")
 else
-    quota_5h_rem="$_3p5h_rem"
-    quota_5h_rst="$_3p5h_rst"
-    quota_wk_rem="$_3pwk_rem"
-    quota_wk_rst="$_3pwk_rst"
+    bucket_5h=$(resolve_quota_bucket "5h$" "^3p" "argon|gemini")
+    bucket_wk=$(resolve_quota_bucket "(weekly|7d|wk)$" "^3p" "argon|gemini")
 fi
+
+IFS=$'\t' read -r quota_5h_key quota_5h_raw quota_5h_rem quota_5h_rst <<< "$bucket_5h"
+IFS=$'\t' read -r quota_wk_key quota_wk_raw quota_wk_rem quota_wk_rst <<< "$bucket_wk"
 
 # --- 4. Theming & Colors ---
 C_RESET="\e[0m"
@@ -250,6 +266,8 @@ if [[ -n "$quota_5h_rem" ]]; then
     rst_fmt=$(format_reset "$quota_5h_rst")
     if [[ -n "$rst_fmt" ]]; then q5_content+="${C_FG_GRAY} ${ICON_QUOTA_RESET} ${rst_fmt}${C_RESET}"; fi
     SEG_CONTENT+=("$q5_content")
+elif [[ -n "$quota_wk_rem" ]]; then
+    SEG_CONTENT+=("${C_FG_GRAY}5H: N/A${C_RESET}")
 fi
 
 # 8. Quota 7D

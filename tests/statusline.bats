@@ -302,3 +302,29 @@ setup() {
   run jq -r '.payload.model.display_name' "$AGY_CACHE_DIR/payloads.jsonl"
   [ "$output" = "Gemini 4 Argon (High)" ]
 }
+
+@test "Quota: routes Gemini 4 Argon (High) to gemini-argon-wtu-weekly and shows 5H: N/A fallback" {
+  payload='{"model":{"display_name":"Gemini 4 Argon (High)"},"terminal_width":200,"quota":{"3p-5h":{"remaining_fraction":1,"reset_in_seconds":17742},"3p-weekly":{"remaining_fraction":1,"reset_in_seconds":604542},"gemini-5h":{"remaining_fraction":0.83695006,"reset_in_seconds":8921},"gemini-argon-wtu-weekly":{"remaining_fraction":0.7551988,"reset_in_seconds":567381},"gemini-weekly":{"remaining_fraction":0.85892534,"reset_in_seconds":565847}}}'
+  run bash -c "printf '%s' '$payload' | bash \"$SCRIPT\""
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"5H: N/A"* ]] || false
+  [[ "$output" == *"7D: "*"75%"*"6d 13h"* ]] || false
+  [[ "$output" != *"85%"* ]] || false
+}
+
+@test "Quota: routes Argon 5h bucket when present alongside argon weekly" {
+  payload='{"model":{"display_name":"Gemini 4 Argon (High)"},"terminal_width":200,"quota":{"gemini-argon-wtu-5h":{"remaining_fraction":0.61,"reset_in_seconds":3600},"gemini-argon-wtu-weekly":{"remaining_fraction":0.7551988,"reset_in_seconds":567381}}}'
+  run bash -c "printf '%s' '$payload' | bash \"$SCRIPT\""
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"5H: "*"61%"*"1h"* ]] || false
+  [[ "$output" == *"7D: "*"75%"*"6d 13h"* ]] || false
+}
+
+@test "Quota: routes non-Argon Gemini (Gemini 4 Hydrogen) to gemini-5h and gemini-weekly even when argon bucket is present" {
+  payload='{"model":{"display_name":"Gemini 4 Hydrogen (High)"},"terminal_width":200,"quota":{"3p-5h":{"remaining_fraction":1,"reset_in_seconds":17742},"3p-weekly":{"remaining_fraction":1,"reset_in_seconds":604542},"gemini-5h":{"remaining_fraction":0.83695006,"reset_in_seconds":8921},"gemini-argon-wtu-weekly":{"remaining_fraction":0.7551988,"reset_in_seconds":567381},"gemini-weekly":{"remaining_fraction":0.85892534,"reset_in_seconds":565847}}}'
+  run bash -c "printf '%s' '$payload' | bash \"$SCRIPT\""
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"5H: "*"83%"* ]] || false
+  [[ "$output" == *"7D: "*"85%"* ]] || false
+  [[ "$output" != *"75%"* ]] || false
+}
