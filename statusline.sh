@@ -18,17 +18,21 @@ if [[ -z "$json_payload" ]]; then
     exit 0
 fi
 
-# --- 2b. Optional payload capture (opt-in via AGY_STATUSLINE_DEBUG=1) ---
+# --- 2b. Optional payload capture (opt-in via AGY_STATUSLINE_DEBUG=1 or debug.on sentinel) ---
 # Appends {ts, payload} as one JSONL line. Failures never affect rendering.
+AGY_CACHE_DIR="${AGY_CACHE_DIR:-$HOME/.cache/agy-statusline}"
+AGY_DEBUG_FILE="${AGY_STATUSLINE_DEBUG_FILE:-$AGY_CACHE_DIR/payloads.jsonl}"
+AGY_DEBUG_FLAG="${AGY_STATUSLINE_DEBUG_FLAG:-$(dirname "$AGY_DEBUG_FILE")/debug.on}"
+
 capture_payload() {
-    local file="${AGY_STATUSLINE_DEBUG_FILE:-$HOME/.cache/agy-statusline/payloads.jsonl}"
+    local file="$AGY_DEBUG_FILE"
     local line
     mkdir -p "$(dirname "$file")" 2>/dev/null || return 0
     line=$(printf "%s" "$json_payload" | jq -c --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '{ts: $ts, payload: .}' 2>/dev/null) || return 0
     printf "%s\n" "$line" >> "$file" 2>/dev/null || return 0
 }
 
-if [[ "${AGY_STATUSLINE_DEBUG:-0}" == "1" ]]; then
+if [[ "${AGY_STATUSLINE_DEBUG:-0}" == "1" || -f "$AGY_DEBUG_FLAG" ]]; then
     capture_payload || true
 fi
 

@@ -3,6 +3,8 @@
 setup() {
   export DIR="$BATS_TEST_DIRNAME/.."
   export SCRIPT="$DIR/statusline.sh"
+  export AGY_CACHE_DIR="$BATS_TEST_TMPDIR/cache"
+  unset AGY_STATUSLINE_DEBUG AGY_STATUSLINE_DEBUG_FILE AGY_STATUSLINE_DEBUG_FLAG
 }
 
 @test "wraps to multiple lines on small width (terminal_width=40)" {
@@ -288,4 +290,15 @@ setup() {
   run bash -c "echo '{\"model\":{\"display_name\":\"Still\"},\"terminal_width\":200}' | bash \"$SCRIPT\""
   [ "$status" -eq 0 ]
   [[ "$output" == *"Still"* ]]
+}
+
+@test "debug capture activates when debug.on sentinel file exists without env var" {
+  unset AGY_STATUSLINE_DEBUG
+  mkdir -p "$AGY_CACHE_DIR"
+  : > "$AGY_CACHE_DIR/debug.on"
+  run bash -c "echo '{\"model\":{\"display_name\":\"Gemini 4 Argon (High)\"},\"quota\":{\"argon-wk\":{\"remaining_fraction\":0.75}}}' | bash \"$SCRIPT\""
+  [ "$status" -eq 0 ]
+  [ -f "$AGY_CACHE_DIR/payloads.jsonl" ]
+  run jq -r '.payload.model.display_name' "$AGY_CACHE_DIR/payloads.jsonl"
+  [ "$output" = "Gemini 4 Argon (High)" ]
 }

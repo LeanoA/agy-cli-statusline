@@ -69,9 +69,11 @@ export AGY_CLASSIC_MODE=1
 
 ## Debug: Payload Capture
 
-To inspect the raw JSON payload that `agy` sends to the status line, enable capture before launching `agy`:
+To inspect the raw JSON payload that `agy` sends to the status line, enable capture via environment variable before launching `agy`, or toggle the sentinel file live during a running session:
 ```bash
 export AGY_STATUSLINE_DEBUG=1
+# Or toggle live without restarting agy:
+mkdir -p ~/.cache/agy-statusline && touch ~/.cache/agy-statusline/debug.on
 # Optional, defaults to ~/.cache/agy-statusline/payloads.jsonl
 export AGY_STATUSLINE_DEBUG_FILE=/path/to/payloads.jsonl
 ```
