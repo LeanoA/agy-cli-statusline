@@ -23,6 +23,7 @@ fi
 AGY_CACHE_DIR="${AGY_CACHE_DIR:-$HOME/.cache/agy-statusline}"
 AGY_DEBUG_FILE="${AGY_STATUSLINE_DEBUG_FILE:-$AGY_CACHE_DIR/payloads.jsonl}"
 AGY_DEBUG_FLAG="${AGY_STATUSLINE_DEBUG_FLAG:-$(dirname "$AGY_DEBUG_FILE")/debug.on}"
+AGY_SETTINGS_FILE="${AGY_SETTINGS_FILE:-$HOME/.gemini/antigravity-cli/settings.json}"
 
 capture_payload() {
     local file="$AGY_DEBUG_FILE"
@@ -39,6 +40,7 @@ fi
 # --- 3. Extract JSON Fields ---
 agent_state=$(printf "%s" "$json_payload" | jq -r '.agent_state // "idle"')
 model=$(printf "%s" "$json_payload" | jq -r '.model.display_name // "unknown"')
+permission_mode=$(printf "%s" "$json_payload" | jq -r '.permission_mode // .cycle_mode // empty')
 ctx_pct=$(printf "%s" "$json_payload" | jq -r '.context_window.used_percentage // 0 | floor')
 git_branch=$(printf "%s" "$json_payload" | jq -r '.vcs?.branch? // empty')
 git_dirty=$(printf "%s" "$json_payload" | jq -r '.vcs?.dirty? // false')
@@ -61,6 +63,78 @@ fi
 term_width=$(printf "%s" "$json_payload" | jq -r '.terminal_width // 80')
 task_count=$(printf "%s" "$json_payload" | jq -r '.task_count // 0')
 subagent_count=$(printf "%s" "$json_payload" | jq -r '[ .subagents[]? | select(.status == "running" or .status == "active") ] | length')
+
+shorten_orch_model() {
+    local m="$1"
+    local nocase_set=0
+    if shopt -q nocasematch; then
+        nocase_set=1
+    else
+        shopt -s nocasematch
+    fi
+    if [[ "$m" =~ ^(Gemini\ 4|Gemini|Claude)[[:space:]]+(.+)$ ]]; then
+        m="${BASH_REMATCH[2]}"
+    fi
+    if [[ "$m" =~ ^(.*)\(Medium\)(.*)$ ]]; then
+        m="${BASH_REMATCH[1]}(Med)${BASH_REMATCH[2]}"
+    fi
+    if (( nocase_set == 0 )); then
+        shopt -u nocasematch
+    fi
+    printf "%s" "$m"
+}
+
+read_orch_roles() {
+    local source_type="$1"
+    local raw_lines=""
+    if [[ "$source_type" == "payload" ]]; then
+        raw_lines=$(printf "%s" "$json_payload" | jq -r '
+            if (.orchestrator? | type) == "object" then
+                (.orchestrator.planner // ""), (.orchestrator.executor // "")
+            else empty end
+        ' 2>/dev/null || true)
+    elif [[ -f "$AGY_SETTINGS_FILE" ]]; then
+        raw_lines=$(jq -r '
+            if (.orchestrator? | type) == "object" then
+                (.orchestrator.planner // ""), (.orchestrator.executor // "")
+            else empty end
+        ' "$AGY_SETTINGS_FILE" 2>/dev/null || true)
+    fi
+    if [[ -n "$raw_lines" ]]; then
+        local idx=0 line
+        while IFS= read -r line; do
+            if (( idx == 0 )) && [[ -z "$orch_planner" ]]; then
+                orch_planner="$line"
+            elif (( idx == 1 )) && [[ -z "$orch_executor" ]]; then
+                orch_executor="$line"
+            fi
+            idx=$(( idx + 1 ))
+        done <<< "$raw_lines"
+    fi
+}
+
+quota_model="$model"
+if [[ "$model" =~ ^[Oo]rchestrator ]]; then
+    orch_planner=""
+    orch_executor=""
+    read_orch_roles "payload"
+    if [[ -z "$orch_planner" || -z "$orch_executor" ]]; then
+        read_orch_roles "settings"
+    fi
+    if [[ -n "$orch_planner" && -n "$orch_executor" ]]; then
+        orch_arrow="→"
+        if [[ "${AGY_CLASSIC_MODE:-0}" == "1" ]]; then
+            orch_arrow="->"
+        fi
+        model="Orch: $(shorten_orch_model "$orch_planner") ${orch_arrow} $(shorten_orch_model "$orch_executor")"
+        permission_mode_lc=$(printf "%s" "$permission_mode" | tr '[:upper:]' '[:lower:]')
+        if [[ "$permission_mode_lc" == "plan" ]]; then
+            quota_model="$orch_planner"
+        else
+            quota_model="$orch_executor"
+        fi
+    fi
+fi
 
 # Dynamically resolve 5h and weekly quota buckets for the active model
 resolve_quota_bucket() {
@@ -85,13 +159,16 @@ resolve_quota_bucket() {
 
 bucket_5h=""
 bucket_wk=""
-if [[ "$model" =~ [Aa][Rr][Gg][Oo][Nn] ]]; then
+if [[ "$quota_model" =~ [Aa][Rr][Gg][Oo][Nn] ]]; then
     bucket_5h=$(resolve_quota_bucket "5h$" "argon")
     bucket_wk=$(resolve_quota_bucket "(weekly|7d|wk)$" "argon")
-    if [[ -z "$bucket_wk" ]]; then
+    if [[ -z "$bucket_5h" && -z "$bucket_wk" ]]; then
+        bucket_5h=$(resolve_quota_bucket "5h$" "^gemini" "argon")
+        bucket_wk=$(resolve_quota_bucket "(weekly|7d|wk)$" "^gemini" "argon")
+    elif [[ -z "$bucket_wk" ]]; then
         bucket_wk=$(resolve_quota_bucket "(weekly|7d|wk)$" "^gemini" "argon")
     fi
-elif [[ "$model" =~ [Gg][Ee][Mm][Ii][Nn][Ii] ]]; then
+elif [[ "$quota_model" =~ ([Gg][Ee][Mm][Ii][Nn][Ii]|[Cc][Aa][Rr][Bb][Oo][Nn]|[Hh][Yy][Dd][Rr][Oo][Gg][Ee][Nn]|[Nn][Ee][Oo][Nn]) ]]; then
     bucket_5h=$(resolve_quota_bucket "5h$" "^gemini" "argon")
     bucket_wk=$(resolve_quota_bucket "(weekly|7d|wk)$" "^gemini" "argon")
 else
@@ -198,7 +275,6 @@ IFS=$'\t' read -r quota_wk_age quota_wk_eff quota_wk_proj <<< "$(update_and_proj
 
 # --- 4. Theming & Colors ---
 C_RESET="\e[0m"
-C_FG_WHITE="\e[38;5;255m"
 
 # Pastel TrueColors
 C_FG_READY="\e[38;2;183;204;133m"
@@ -401,10 +477,16 @@ fi
 
 get_visible_length() {
     local extglob_set=0
-    shopt -q extglob && extglob_set=1 || shopt -s extglob
+    if shopt -q extglob; then
+        extglob_set=1
+    else
+        shopt -s extglob
+    fi
     # Strip ANSI escape sequences to compute length
     local s="${1//\\e\[*([0-9;])m/}"
-    (( extglob_set == 0 )) && shopt -u extglob
+    if (( extglob_set == 0 )); then
+        shopt -u extglob
+    fi
     REPLY="${#s}"
 }
 

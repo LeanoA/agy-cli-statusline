@@ -58,12 +58,12 @@ To safely remove the plugin and restore your Antigravity configuration to its or
 The status line dynamically renders the following data from the JSON payload:
 *   **Status Indicator**: Shows the current agent state (Idle, Thinking, Working, Blocked).
 *   **App Name**: Displays `Agy CLI`.
-*   **Model**: The active LLM model.
+*   **Model**: The active LLM model. When running in `Orchestrator` mode, resolves the configured planner and executor roles from `AGY_SETTINGS_FILE` and displays `Orch: <Planner> → <Executor>` (using `->` in Classic Mode).
 *   **Git**: Current branch and dirty state indicator.
 *   **Context**: Progress bar and percentage for context window usage.
 *   **Workers**: Active subagents and background tasks.
 *   **Quotas**: Remaining 5H and 7D API quotas, plus reset times:
-    *   **Dynamic Bucket Routing**: Automatically selects Argon (`gemini-argon-wtu-weekly`), standard Gemini (`gemini-5h` / `gemini-weekly`), or third-party (`3p-5h` / `3p-weekly`) quota buckets based on the active model. When a model only has a 7D bucket (such as Argon WTU weekly), `5H: N/A` is rendered to preserve the two-column quota layout.
+    *   **Dynamic Bucket Routing**: Automatically selects Argon (`gemini-argon-wtu-weekly`, falling back to unified `gemini-5h` / `gemini-weekly` when dedicated Argon buckets are absent), standard Gemini (`gemini-5h` / `gemini-weekly`), or third-party (`3p-5h` / `3p-weekly`) quota buckets based on the active model (or the active Orchestrator role, defaulting to the executor unless `plan` mode is reported). When a model only has a 7D bucket (such as legacy Argon WTU weekly), `5H: N/A` is rendered to preserve the two-column quota layout.
     *   **Mid-Turn Staleness & Burn-Rate Projection**: Because `agy` only refreshes `.quota` from the backend at the end of a prompt, long active turns (`thinking`/`working`) display a staleness age badge (`⟳Xm`, configurable via `AGY_QUOTA_STALE_SECONDS`, default `120`) and project remaining quota (`~X%`) from observed time/token burn rate, applying warning (`<=40%`) and critical (`<=15%`) colors to the projected value before quota runs out.
 
 ## Classic Mode
@@ -78,6 +78,7 @@ export AGY_CLASSIC_MODE=1
 | Variable | Default | Description |
 | :--- | :--- | :--- |
 | `AGY_CLASSIC_MODE` | `0` | Set to `1` to replace Nerd Font icons with ASCII/Unicode fallbacks (`~4m` instead of `⟳4m`). |
+| `AGY_SETTINGS_FILE` | `~/.gemini/antigravity-cli/settings.json` | Antigravity CLI settings file used to resolve Orchestrator planner/executor models. |
 | `AGY_CACHE_DIR` | `~/.cache/agy-statusline` | Directory used for quota state caching and debug capture files. |
 | `AGY_QUOTA_STALE_SECONDS` | `120` | Seconds before an unchanged quota snapshot during an active turn displays the staleness badge and burn-rate projection. |
 | `AGY_QUOTA_STATE_FILE` | `$AGY_CACHE_DIR/quota-state.json` | JSON file storing per-session quota snapshots for staleness and burn-rate calculations. |
