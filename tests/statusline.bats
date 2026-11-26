@@ -4,6 +4,7 @@ setup() {
   export DIR="$BATS_TEST_DIRNAME/.."
   export SCRIPT="$DIR/statusline.sh"
   export AGY_CACHE_DIR="$BATS_TEST_TMPDIR/cache"
+  export AGY_SETTINGS_FILE="$BATS_TEST_TMPDIR/settings.json"
   unset AGY_STATUSLINE_DEBUG AGY_STATUSLINE_DEBUG_FILE AGY_STATUSLINE_DEBUG_FLAG
 }
 
@@ -404,4 +405,62 @@ setup() {
   run bash -c "printf '%s' '$p3' | AGY_STATUSLINE_NOW=1420 bash \"$SCRIPT\""
   [ "$status" -eq 0 ]
   [[ "$output" == *"38;5;196m~15%"* ]] || false
+}
+
+@test "Orchestrator: formats planner and executor from AGY_SETTINGS_FILE and routes Gemini quotas" {
+  cat > "$AGY_SETTINGS_FILE" <<'EOF'
+{"model":"Orchestrator (Neon)","orchestrator":{"planner":"Gemini 4 Carbon (Medium)","executor":"Gemini 4 Hydrogen (High)"}}
+EOF
+  payload='{"model":{"id":"Orchestrator (Neon)","display_name":"Orchestrator (Neon)"},"terminal_width":200,"quota":{"3p-5h":{"remaining_fraction":1,"reset_in_seconds":18000},"3p-weekly":{"remaining_fraction":1,"reset_in_seconds":604800},"gemini-5h":{"remaining_fraction":0.81,"reset_in_seconds":8900},"gemini-weekly":{"remaining_fraction":0.93,"reset_in_seconds":565000}}}'
+  run bash -c "printf '%s' '$payload' | bash \"$SCRIPT\""
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Orch: Carbon (Med) → Hydrogen (High)"* ]] || false
+  [[ "$output" != *"Neon"* ]] || false
+  [[ "$output" == *"81%"* ]] || false
+  [[ "$output" == *"93%"* ]] || false
+  [[ "$output" != *"100%"* ]] || false
+
+  run bash -c "printf '%s' '$payload' | AGY_CLASSIC_MODE=1 bash \"$SCRIPT\""
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Orch: Carbon (Med) -> Hydrogen (High)"* ]] || false
+}
+
+@test "Orchestrator: falls back gracefully when AGY_SETTINGS_FILE is missing and still routes Neon to Gemini quotas" {
+  rm -f "$AGY_SETTINGS_FILE"
+  payload='{"model":{"id":"Orchestrator (Neon)","display_name":"Orchestrator (Neon)"},"terminal_width":200,"quota":{"3p-5h":{"remaining_fraction":1,"reset_in_seconds":18000},"3p-weekly":{"remaining_fraction":1,"reset_in_seconds":604800},"gemini-5h":{"remaining_fraction":0.81,"reset_in_seconds":8900},"gemini-weekly":{"remaining_fraction":0.93,"reset_in_seconds":565000}}}'
+  run bash -c "printf '%s' '$payload' | bash \"$SCRIPT\""
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Orchestrator (Neon)"* ]] || false
+  [[ "$output" == *"81%"* ]] || false
+  [[ "$output" == *"93%"* ]] || false
+  [[ "$output" != *"100%"* ]] || false
+}
+
+@test "Orchestrator: routes quota family from active role when planner is 3p (Claude Opus)" {
+  cat > "$AGY_SETTINGS_FILE" <<'EOF'
+{"orchestrator":{"planner":"Claude Opus 5.5 (Medium)","executor":"Gemini 4 Hydrogen (High)"}}
+EOF
+  p_plan='{"model":{"display_name":"Orchestrator (Neon)"},"permission_mode":"plan","terminal_width":200,"quota":{"3p-5h":{"remaining_fraction":0.42,"reset_in_seconds":3600},"3p-weekly":{"remaining_fraction":0.77,"reset_in_seconds":604800},"gemini-5h":{"remaining_fraction":0.81,"reset_in_seconds":8900},"gemini-weekly":{"remaining_fraction":0.93,"reset_in_seconds":565000}}}'
+  run bash -c "printf '%s' '$p_plan' | bash \"$SCRIPT\""
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Orch: Opus 5.5 (Med) → Hydrogen (High)"* ]] || false
+  [[ "$output" == *"42%"* ]] || false
+  [[ "$output" == *"77%"* ]] || false
+  [[ "$output" != *"81%"* ]] || false
+
+  p_exec='{"model":{"display_name":"Orchestrator (Neon)"},"cycle_mode":"auto","terminal_width":200,"quota":{"3p-5h":{"remaining_fraction":0.42,"reset_in_seconds":3600},"3p-weekly":{"remaining_fraction":0.77,"reset_in_seconds":604800},"gemini-5h":{"remaining_fraction":0.81,"reset_in_seconds":8900},"gemini-weekly":{"remaining_fraction":0.93,"reset_in_seconds":565000}}}'
+  run bash -c "printf '%s' '$p_exec' | bash \"$SCRIPT\""
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"81%"* ]] || false
+  [[ "$output" == *"93%"* ]] || false
+  [[ "$output" != *"42%"* ]] || false
+}
+
+@test "Quota: Argon falls back to unified gemini-5h and gemini-weekly when no argon bucket exists" {
+  payload='{"model":{"display_name":"Gemini 4 Argon (High)"},"terminal_width":200,"quota":{"3p-5h":{"remaining_fraction":1,"reset_in_seconds":18000},"3p-weekly":{"remaining_fraction":1,"reset_in_seconds":604800},"gemini-5h":{"remaining_fraction":0.81,"reset_in_seconds":8900},"gemini-weekly":{"remaining_fraction":0.93,"reset_in_seconds":565000}}}'
+  run bash -c "printf '%s' '$payload' | bash \"$SCRIPT\""
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"5H: "*"81%"* ]] || false
+  [[ "$output" == *"7D: "*"93%"* ]] || false
+  [[ "$output" != *"5H: N/A"* ]] || false
 }
