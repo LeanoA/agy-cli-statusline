@@ -78,19 +78,42 @@ shorten_orch_model() {
     printf "%s" "$m"
 }
 
+read_orch_roles() {
+    local source_type="$1"
+    local raw_lines=""
+    if [[ "$source_type" == "payload" ]]; then
+        raw_lines=$(printf "%s" "$json_payload" | jq -r '
+            if (.orchestrator? | type) == "object" then
+                (.orchestrator.planner // ""), (.orchestrator.executor // "")
+            else empty end
+        ' 2>/dev/null || true)
+    elif [[ -f "$AGY_SETTINGS_FILE" ]]; then
+        raw_lines=$(jq -r '
+            if (.orchestrator? | type) == "object" then
+                (.orchestrator.planner // ""), (.orchestrator.executor // "")
+            else empty end
+        ' "$AGY_SETTINGS_FILE" 2>/dev/null || true)
+    fi
+    if [[ -n "$raw_lines" ]]; then
+        local idx=0 line
+        while IFS= read -r line; do
+            if (( idx == 0 )) && [[ -z "$orch_planner" ]]; then
+                orch_planner="$line"
+            elif (( idx == 1 )) && [[ -z "$orch_executor" ]]; then
+                orch_executor="$line"
+            fi
+            idx=$(( idx + 1 ))
+        done <<< "$raw_lines"
+    fi
+}
+
 quota_model="$model"
 if [[ "$model" =~ ^[Oo]rchestrator ]]; then
     orch_planner=""
     orch_executor=""
-    IFS=$'\t' read -r orch_planner orch_executor <<< "$(printf "%s" "$json_payload" | jq -r '
-        if (.orchestrator? | type) == "object" then
-            "\(.orchestrator.planner // "")\t\(.orchestrator.executor // "")"
-        else "" end
-    ' 2>/dev/null || true)"
-    if [[ ( -z "$orch_planner" || -z "$orch_executor" ) && -f "$AGY_SETTINGS_FILE" ]]; then
-        IFS=$'\t' read -r orch_planner orch_executor <<< "$(jq -r '
-            "\(.orchestrator.planner // "")\t\(.orchestrator.executor // "")"
-        ' "$AGY_SETTINGS_FILE" 2>/dev/null || true)"
+    read_orch_roles "payload"
+    if [[ -z "$orch_planner" || -z "$orch_executor" ]]; then
+        read_orch_roles "settings"
     fi
     if [[ -n "$orch_planner" && -n "$orch_executor" ]]; then
         orch_arrow="→"

@@ -483,3 +483,25 @@ EOF
   [[ "$output" == *"77%"* ]] || false
   [[ "$output" != *"81%"* ]] || false
 }
+
+@test "Orchestrator: merges partial payload roles with AGY_SETTINGS_FILE without overwriting or tab-shifting" {
+  cat > "$AGY_SETTINGS_FILE" <<'EOF'
+{"orchestrator":{"planner":"Gemini 4 Carbon (Medium)","executor":"Gemini 4 Hydrogen (High)"}}
+EOF
+  p_exec_only='{"model":{"display_name":"Orchestrator (Neon)"},"orchestrator":{"planner":"","executor":"Gemini 4 Argon (High)"},"terminal_width":200,"quota":{"gemini-5h":{"remaining_fraction":0.81,"reset_in_seconds":8900},"gemini-weekly":{"remaining_fraction":0.93,"reset_in_seconds":565000}}}'
+  run bash -c "printf '%s' '$p_exec_only' | bash \"$SCRIPT\""
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Orch: Carbon (Med) → Argon (High)"* ]] || false
+
+  p_plan_only='{"model":{"display_name":"Orchestrator (Neon)"},"orchestrator":{"planner":"Claude Opus 5.5 (Medium)"},"terminal_width":200,"quota":{"gemini-5h":{"remaining_fraction":0.81,"reset_in_seconds":8900},"gemini-weekly":{"remaining_fraction":0.93,"reset_in_seconds":565000}}}'
+  run bash -c "printf '%s' '$p_plan_only' | bash \"$SCRIPT\""
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Orch: Opus 5.5 (Med) → Hydrogen (High)"* ]] || false
+
+  cat > "$AGY_SETTINGS_FILE" <<'EOF'
+{"orchestrator":{"planner":"Gemini 4 Carbon (Medium)"}}
+EOF
+  run bash -c "printf '%s' '$p_exec_only' | bash \"$SCRIPT\""
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Orch: Carbon (Med) → Argon (High)"* ]] || false
+}
