@@ -67,7 +67,11 @@ subagent_count=$(printf "%s" "$json_payload" | jq -r '[ .subagents[]? | select(.
 shorten_orch_model() {
     local m="$1"
     local nocase_set=0
-    shopt -q nocasematch && nocase_set=1 || shopt -s nocasematch
+    if shopt -q nocasematch; then
+        nocase_set=1
+    else
+        shopt -s nocasematch
+    fi
     if [[ "$m" =~ ^(Gemini\ 4|Gemini|Claude)[[:space:]]+(.+)$ ]]; then
         m="${BASH_REMATCH[2]}"
     fi
@@ -271,7 +275,6 @@ IFS=$'\t' read -r quota_wk_age quota_wk_eff quota_wk_proj <<< "$(update_and_proj
 
 # --- 4. Theming & Colors ---
 C_RESET="\e[0m"
-C_FG_WHITE="\e[38;5;255m"
 
 # Pastel TrueColors
 C_FG_READY="\e[38;2;183;204;133m"
@@ -474,10 +477,16 @@ fi
 
 get_visible_length() {
     local extglob_set=0
-    shopt -q extglob && extglob_set=1 || shopt -s extglob
+    if shopt -q extglob; then
+        extglob_set=1
+    else
+        shopt -s extglob
+    fi
     # Strip ANSI escape sequences to compute length
     local s="${1//\\e\[*([0-9;])m/}"
-    (( extglob_set == 0 )) && shopt -u extglob
+    if (( extglob_set == 0 )); then
+        shopt -u extglob
+    fi
     REPLY="${#s}"
 }
 
