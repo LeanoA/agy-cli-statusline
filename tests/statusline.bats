@@ -464,3 +464,22 @@ EOF
   [[ "$output" == *"7D: "*"93%"* ]] || false
   [[ "$output" != *"5H: N/A"* ]] || false
 }
+
+@test "Orchestrator: defaults quota routing to executor when mode is omitted and handles case-insensitive plan mode" {
+  cat > "$AGY_SETTINGS_FILE" <<'EOF'
+{"orchestrator":{"planner":"Claude Opus 5.5 (Medium)","executor":"Gemini 4 Hydrogen (High)"}}
+EOF
+  p_missing='{"model":{"display_name":"Orchestrator (Neon)"},"terminal_width":200,"quota":{"3p-5h":{"remaining_fraction":0.42,"reset_in_seconds":3600},"3p-weekly":{"remaining_fraction":0.77,"reset_in_seconds":604800},"gemini-5h":{"remaining_fraction":0.81,"reset_in_seconds":8900},"gemini-weekly":{"remaining_fraction":0.93,"reset_in_seconds":565000}}}'
+  run bash -c "printf '%s' '$p_missing' | bash \"$SCRIPT\""
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"81%"* ]] || false
+  [[ "$output" == *"93%"* ]] || false
+  [[ "$output" != *"42%"* ]] || false
+
+  p_plan_upper='{"model":{"display_name":"Orchestrator (Neon)"},"cycle_mode":"PLAN","terminal_width":200,"quota":{"3p-5h":{"remaining_fraction":0.42,"reset_in_seconds":3600},"3p-weekly":{"remaining_fraction":0.77,"reset_in_seconds":604800},"gemini-5h":{"remaining_fraction":0.81,"reset_in_seconds":8900},"gemini-weekly":{"remaining_fraction":0.93,"reset_in_seconds":565000}}}'
+  run bash -c "printf '%s' '$p_plan_upper' | bash \"$SCRIPT\""
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"42%"* ]] || false
+  [[ "$output" == *"77%"* ]] || false
+  [[ "$output" != *"81%"* ]] || false
+}

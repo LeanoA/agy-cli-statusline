@@ -98,10 +98,11 @@ if [[ "$model" =~ ^[Oo]rchestrator ]]; then
             orch_arrow="->"
         fi
         model="Orch: $(shorten_orch_model "$orch_planner") ${orch_arrow} $(shorten_orch_model "$orch_executor")"
-        if [[ -n "$permission_mode" && "$permission_mode" != "plan" ]]; then
-            quota_model="$orch_executor"
-        else
+        permission_mode_lc=$(printf "%s" "$permission_mode" | tr '[:upper:]' '[:lower:]')
+        if [[ "$permission_mode_lc" == "plan" ]]; then
             quota_model="$orch_planner"
+        else
+            quota_model="$orch_executor"
         fi
     fi
 fi
