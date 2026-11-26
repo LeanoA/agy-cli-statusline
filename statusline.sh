@@ -74,7 +74,9 @@ shorten_orch_model() {
     if [[ "$m" =~ ^(.*)\(Medium\)(.*)$ ]]; then
         m="${BASH_REMATCH[1]}(Med)${BASH_REMATCH[2]}"
     fi
-    (( nocase_set == 0 )) && shopt -u nocasematch
+    if (( nocase_set == 0 )); then
+        shopt -u nocasematch
+    fi
     printf "%s" "$m"
 }
 

@@ -505,3 +505,15 @@ EOF
   [ "$status" -eq 0 ]
   [[ "$output" == *"Orch: Carbon (Med) → Argon (High)"* ]] || false
 }
+
+@test "Orchestrator: shorten_orch_model succeeds when nocasematch is already enabled" {
+  cat > "$AGY_SETTINGS_FILE" <<'EOF'
+{"orchestrator":{"planner":"Gemini 4 Carbon (Medium)","executor":"Gemini 4 Hydrogen (High)"}}
+EOF
+  local env_file="$BATS_TEST_TMPDIR/nocase.env"
+  printf 'shopt -s nocasematch\n' > "$env_file"
+  payload='{"model":{"display_name":"Orchestrator (Neon)"},"terminal_width":200,"quota":{"gemini-5h":{"remaining_fraction":0.81,"reset_in_seconds":8900},"gemini-weekly":{"remaining_fraction":0.93,"reset_in_seconds":565000}}}'
+  run bash -c "printf '%s' '$payload' | BASH_ENV=\"$env_file\" bash \"$SCRIPT\""
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Orch: Carbon (Med) → Hydrogen (High)"* ]] || false
+}
